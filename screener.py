@@ -1,7 +1,7 @@
 import time
 import schedule
 import pandas as pd
-import pandas_ta as ta
+mport pandas_ta_quant as ta
 import numpy as np
 import yfinance as yf
 from datetime import datetime
