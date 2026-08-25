@@ -1,7 +1,6 @@
+import os
 import time
-import schedule
 import pandas as pd
-mport pandas_ta_quant as ta
 import numpy as np
 import yfinance as yf
 from datetime import datetime
@@ -11,13 +10,12 @@ from google.oauth2.service_account import Credentials
 # ==========================================
 # CONFIGURATION & CONSTANTS
 # ==========================================
-# 1. Replace with your Google Spreadsheet ID
-SPREADSHEET_ID = "1LSHDayXuQ43C8FNdn9bnxw-lFPkSTOrBjov1gme0t2g"
 
-# 2. Path to your downloaded service account credentials file
+# Read Spreadsheet ID from environment variable (GitHub Secrets) or fallback
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1LSHDayXuQ43C8FNdn9bnxw-lFPkSTOrBjov1gme0t2g")
 CREDENTIALS_FILE = "credentials.json"
 
-# Sectoral Indices to monitor
+# Sectoral Indices to monitor (NSE Sector Indices on Yahoo Finance)
 SECTOR_INDICES = {
     "NIFTY BANK": "^NSEBANK",
     "NIFTY IT": "^CNXIT",
@@ -31,7 +29,7 @@ SECTOR_INDICES = {
     "NIFTY PSU BANK": "^CNXPSUBANK"
 }
 
-# Stock constituents categorized by Index
+# Stock constituents categorized by Index (Sample F&O tickers mapped to .NS extension)
 INDEX_CONSTITUENTS = {
     "NIFTY50": ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", "ITC.NS", "SBIN.NS", "LTIM.NS", "AXISBANK.NS"],
     "NIFTY NEXT50": ["BEL.NS", "HAL.NS", "TATASTEEL.NS", "TRENT.NS", "PFC.NS", "REC.NS", "DLF.NS", "IOC.NS", "GAIL.NS", "BANKBARODA.NS"],
@@ -40,7 +38,7 @@ INDEX_CONSTITUENTS = {
 }
 
 # ==========================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS FOR CALCULATIONS & GOOGLE SHEETS
 # ==========================================
 
 def get_gspread_client():
@@ -54,11 +52,67 @@ def get_gspread_client():
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
     return sheet
 
+
 def flatten_yf_df(df):
-    """Flattens MultiIndex columns returned by newer yfinance versions."""
+    """Flattens MultiIndex columns returned by recent yfinance versions."""
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
+
+
+def compute_supertrend(df, period=10, multiplier=3):
+    """Calculates Supertrend (10,3) natively using pure pandas."""
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    
+    # Calculate Average True Range (ATR)
+    price_diff1 = high - low
+    price_diff2 = (high - close.shift(1)).abs()
+    price_diff3 = (low - close.shift(1)).abs()
+    tr = pd.concat([price_diff1, price_diff2, price_diff3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    
+    hl2 = (high + low) / 2
+    basic_ub = hl2 + (multiplier * atr)
+    basic_lb = hl2 - (multiplier * atr)
+    
+    final_ub = pd.Series(0.0, index=df.index)
+    final_lb = pd.Series(0.0, index=df.index)
+    supertrend = pd.Series(0.0, index=df.index)
+    direction = pd.Series(1, index=df.index)  # 1 = Bullish, -1 = Bearish
+    
+    for i in range(1, len(df)):
+        # Upper band calculation
+        if basic_ub.iloc[i] < final_ub.iloc[i-1] or close.iloc[i-1] > final_ub.iloc[i-1]:
+            final_ub.iloc[i] = basic_ub.iloc[i]
+        else:
+            final_ub.iloc[i] = final_ub.iloc[i-1]
+            
+        # Lower band calculation
+        if basic_lb.iloc[i] > final_lb.iloc[i-1] or close.iloc[i-1] < final_lb.iloc[i-1]:
+            final_lb.iloc[i] = basic_lb.iloc[i]
+        else:
+            final_lb.iloc[i] = final_lb.iloc[i-1]
+            
+        # Trend direction determination
+        if direction.iloc[i-1] == 1:
+            if close.iloc[i] < final_lb.iloc[i]:
+                direction.iloc[i] = -1
+                supertrend.iloc[i] = final_ub.iloc[i]
+            else:
+                direction.iloc[i] = 1
+                supertrend.iloc[i] = final_lb.iloc[i]
+        else:
+            if close.iloc[i] > final_ub.iloc[i]:
+                direction.iloc[i] = 1
+                supertrend.iloc[i] = final_lb.iloc[i]
+            else:
+                direction.iloc[i] = -1
+                supertrend.iloc[i] = final_ub.iloc[i]
+                
+    return supertrend, direction
+
 
 def get_sector_crackdowns():
     """Identifies sectors that cracked down by >= 2% today."""
@@ -82,6 +136,7 @@ def get_sector_crackdowns():
             print(f"Error fetching sector {name}: {e}")
     return cracked_sectors
 
+
 def compute_vwap_intraday(ticker):
     """Fetches 5-minute intraday data to calculate true Intraday VWAP."""
     try:
@@ -95,6 +150,7 @@ def compute_vwap_intraday(ticker):
         return float(vwap)
     except Exception:
         return 0.0
+
 
 def analyze_stock(ticker):
     """Fetches stock data and evaluates weekly, previous day, and daily drawdown conditions."""
@@ -119,19 +175,15 @@ def analyze_stock(ticker):
         # Filter Condition: Bearish Weekly < -7%, Previous Day < -5%, Daily < -3%
         is_bearish_pass = (weekly_change < -7.0) and (prev_day_change < -5.0) and (day_change < -3.0)
 
-        # Technical Indicators
-        df_daily['20_EMA'] = ta.ema(df_daily['Close'], length=20)
-        df_daily['9_EMA'] = ta.ema(df_daily['Close'], length=9)
-        df_daily['21_EMA'] = ta.ema(df_daily['Close'], length=21)
+        # Exponential Moving Averages (Natively calculated)
+        df_daily['20_EMA'] = df_daily['Close'].ewm(span=20, adjust=False).mean()
+        df_daily['9_EMA'] = df_daily['Close'].ewm(span=9, adjust=False).mean()
+        df_daily['21_EMA'] = df_daily['Close'].ewm(span=21, adjust=False).mean()
         
-        st = ta.supertrend(df_daily['High'], df_daily['Low'], df_daily['Close'], length=10, multiplier=3)
-        
-        # Determine correct column keys dynamically from pandas_ta response
-        st_col = [c for c in st.columns if c.startswith("SUPERT_")][0]
-        st_dir_col = [c for c in st.columns if c.startswith("SUPERTd_")][0]
-
-        df_daily['Supertrend'] = st[st_col]
-        df_daily['ST_Direction'] = st[st_dir_col]
+        # Supertrend (Natively calculated)
+        st_vals, st_dirs = compute_supertrend(df_daily, period=10, multiplier=3)
+        df_daily['Supertrend'] = st_vals
+        df_daily['ST_Direction'] = st_dirs
 
         # Fetch Intraday VWAP
         vwap = compute_vwap_intraday(ticker)
@@ -168,6 +220,7 @@ def analyze_stock(ticker):
         print(f"Error analyzing {ticker}: {e}")
         return None
 
+
 def update_google_sheet(df_results, run_timestamp):
     """Appends screener results along with Date and Time into Google Sheets."""
     try:
@@ -181,43 +234,48 @@ def update_google_sheet(df_results, run_timestamp):
                        "Weekly Return (%)", "VWAP", "20 EMA", "Supertrend", "Short Trade Trigger"]
             sheet.append_row(headers)
 
-        # Prepare rows to append
-        rows_to_append = []
         date_str = run_timestamp.strftime("%Y-%m-%d")
         time_str = run_timestamp.strftime("%H:%M:%S")
 
-        for _, row in df_results.iterrows():
-            row_data = [
-                date_str,
-                time_str,
-                int(row['Rank']),
-                str(row['Ticker']),
-                str(row['Index / Category']),
-                float(row['Current Price']),
-                float(row['Day Return (%)']),
-                float(row['Prev Day Return (%)']),
-                float(row['Weekly Return (%)']),
-                float(row['VWAP']),
-                float(row['20 EMA']),
-                float(row['Supertrend']),
-                str(row['Short Trade Trigger'])
-            ]
-            rows_to_append.append(row_data)
+        if df_results is not None and not df_results.empty:
+            rows_to_append = []
+            for _, row in df_results.iterrows():
+                row_data = [
+                    date_str,
+                    time_str,
+                    int(row['Rank']),
+                    str(row['Ticker']),
+                    str(row['Index / Category']),
+                    float(row['Current Price']),
+                    float(row['Day Return (%)']),
+                    float(row['Prev Day Return (%)']),
+                    float(row['Weekly Return (%)']),
+                    float(row['VWAP']),
+                    float(row['20 EMA']),
+                    float(row['Supertrend']),
+                    str(row['Short Trade Trigger'])
+                ]
+                rows_to_append.append(row_data)
 
-        if rows_to_append:
             sheet.append_rows(rows_to_append)
-            print(f"[SUCCESS] Successfully written {len(rows_to_append)} rows to Google Sheet.")
+            print(f"[SUCCESS] Successfully appended {len(rows_to_append)} rows to Google Sheet.")
+        else:
+            # Append a status row when no stocks meet criteria
+            no_data_row = [date_str, time_str, 0, "N/A", "N/A", 0, 0, 0, 0, 0, 0, 0, "NO SIGNALS MET"]
+            sheet.append_row(no_data_row)
+            print("[INFO] Appended 'NO SIGNALS MET' entry to Google Sheet.")
+            
     except Exception as e:
         print(f"[ERROR] Failed to update Google Sheet: {e}")
 
 # ==========================================
-# MAIN ROUTINE
+# MAIN EXECUTION ROUTINE
 # ==========================================
 
 def run_screener():
     now = datetime.now()
     print(f"\n==================================================")
-    print(f" Running Screener Task at: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f" Running Screener Execution at: {now.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"==================================================")
     
     # Step 1: Detect cracked sectors
@@ -247,29 +305,11 @@ def run_screener():
         print("\n================ FINAL BEARISH BREAKOUT RESULTS ================")
         print(df_final.to_string(index=False))
         
-        # Step 4: Write to Google Sheet
+        # Step 4: Write results to Google Sheet
         update_google_sheet(df_final, now)
     else:
         print("\nNo stocks met all strict drawdown conditions (Weekly < -7%, Prev Day < -5%, Day < -3%).")
-        # Write "No Signals" entry to Sheet for historical logs
-        sheet = get_gspread_client()
-        date_str = now.strftime("%Y-%m-%d")
-        time_str = now.strftime("%H:%M:%S")
-        sheet.append_row([date_str, time_str, 0, "N/A", "N/A", 0, 0, 0, 0, 0, 0, 0, "NO SIGNALS MET"])
-
-# ==========================================
-# SCHEDULER EXECUTION LOOP
-# ==========================================
+        update_google_sheet(None, now)
 
 if __name__ == "__main__":
-    print("Screener Scheduler Started...")
-    print("Scheduled Runs: 09:15 AM and 05:30 PM Daily.")
-    
-    # Schedule the jobs
-    schedule.every().day.at("09:15").do(run_screener)
-    schedule.every().day.at("17:30").do(run_screener)
-    
-    # Infinite loop to keep the script running
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
+    run_screener()
