@@ -37,6 +37,13 @@ INDEX_CONSTITUENTS = {
     "NIFTY MIDCAP150": ["PERSISTENT.NS", "POLYCAB.NS", "COFORGE.NS", "MPHASIS.NS", "FEDERALBNK.NS", "ASHOKLEY.NS", "MAXHEALTH.NS", "ASTRAL.NS", "BALKRISIND.NS", "IDFCFIRSTB.NS"]
 }
 
+# Expected headers for Google Sheet alignment
+EXPECTED_HEADERS = [
+    "Run Date", "Run Time", "Rank", "Ticker", "Index / Category", 
+    "Current Price", "Day Return (%)", "Prev Day Return (%)", 
+    "Weekly Return (%)", "VWAP", "20 EMA", "Supertrend", "Short Trade Trigger"
+]
+
 # ==========================================
 # HELPER FUNCTIONS FOR CALCULATIONS & GOOGLE SHEETS
 # ==========================================
@@ -172,7 +179,7 @@ def analyze_stock(ticker):
         weekly_close_5d_ago = float(df_daily['Close'].iloc[-6]) if len(df_daily) >= 6 else float(df_daily['Close'].iloc[0])
         weekly_change = ((curr_price - weekly_close_5d_ago) / weekly_close_5d_ago) * 100
 
-        # Filter Condition: Relaxed to Weekly < -2.0% and Daily < -1.0%
+        # Filter Condition: Weekly < -2.0% and Daily < -1.0%
         is_bearish_pass = (weekly_change < -2.0) and (day_change < -1.0)
 
         # Exponential Moving Averages (Natively calculated)
@@ -222,17 +229,15 @@ def analyze_stock(ticker):
 
 
 def update_google_sheet(df_results, run_timestamp):
-    """Appends screener results along with Date and Time into Google Sheets."""
+    """Appends screener results into Google Sheets and enforces header existence."""
     try:
         sheet = get_gspread_client()
-        
-        # Check if Sheet is completely empty (Add headers if empty)
         existing_records = sheet.get_all_values()
-        if not existing_records:
-            headers = ["Run Date", "Run Time", "Rank", "Ticker", "Index / Category", 
-                       "Current Price", "Day Return (%)", "Prev Day Return (%)", 
-                       "Weekly Return (%)", "VWAP", "20 EMA", "Supertrend", "Short Trade Trigger"]
-            sheet.append_row(headers)
+        
+        # Check if sheet is empty or if Row 1 is NOT equal to the expected header
+        if not existing_records or existing_records[0] != EXPECTED_HEADERS:
+            sheet.insert_row(EXPECTED_HEADERS, index=1)
+            print("[INFO] Missing or incorrect headers detected. Added header row to Row 1.")
 
         date_str = run_timestamp.strftime("%Y-%m-%d")
         time_str = run_timestamp.strftime("%H:%M:%S")
@@ -261,7 +266,7 @@ def update_google_sheet(df_results, run_timestamp):
             print(f"[SUCCESS] Successfully appended {len(rows_to_append)} rows to Google Sheet.")
         else:
             # Append a status row when no stocks meet criteria
-            no_data_row = [date_str, time_str, 0, "N/A", "N/A", 0, 0, 0, 0, 0, 0, 0, "NO SIGNALS MET"]
+            no_data_row = [date_str, time_str, 0, "N/A", "N/A", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "NO SIGNALS MET"]
             sheet.append_row(no_data_row)
             print("[INFO] Appended 'NO SIGNALS MET' entry to Google Sheet.")
             
