@@ -1,0 +1,7 @@
+pandas
+pandas_ta
+numpy
+yfinance
+gspread
+google-auth
+schedule
