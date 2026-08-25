@@ -1,6 +1,6 @@
-pandas
-git+https://github.com/twopirllc/pandas-ta.git
-numpy
+pandas<2.0.0
+numpy<2.0.0
+pandas_ta==0.3.14b0
 yfinance
 gspread
 google-auth
