@@ -115,7 +115,7 @@ def compute_supertrend(df, period=10, multiplier=3):
 
 
 def get_sector_crackdowns():
-    """Identifies sectors that cracked down by >= 2% today."""
+    """Identifies sectors that cracked down by >= 1% today."""
     cracked_sectors = []
     print("--- Step 1: Checking Sector Performance ---")
     for name, ticker in SECTOR_INDICES.items():
@@ -127,7 +127,7 @@ def get_sector_crackdowns():
                 curr_close = float(data['Close'].iloc[-1])
                 day_change = ((curr_close - prev_close) / prev_close) * 100
                 
-                if day_change <= -2.0:
+                if day_change <= -1.0:
                     cracked_sectors.append(name)
                     print(f"[CRACKED] {name}: {day_change:.2f}%")
                 else:
@@ -153,7 +153,7 @@ def compute_vwap_intraday(ticker):
 
 
 def analyze_stock(ticker):
-    """Fetches stock data and evaluates weekly, previous day, and daily drawdown conditions."""
+    """Fetches stock data and evaluates bearish criteria."""
     try:
         df_daily = yf.download(ticker, period="1mo", interval="1d", progress=False)
         df_daily = flatten_yf_df(df_daily)
@@ -172,8 +172,8 @@ def analyze_stock(ticker):
         weekly_close_5d_ago = float(df_daily['Close'].iloc[-6]) if len(df_daily) >= 6 else float(df_daily['Close'].iloc[0])
         weekly_change = ((curr_price - weekly_close_5d_ago) / weekly_close_5d_ago) * 100
 
-        # Filter Condition: Bearish Weekly < -7%, Previous Day < -5%, Daily < -3%
-        is_bearish_pass = (weekly_change < -7.0) and (prev_day_change < -5.0) and (day_change < -3.0)
+        # Filter Condition: Relaxed to Weekly < -2.0% and Daily < -1.0%
+        is_bearish_pass = (weekly_change < -2.0) and (day_change < -1.0)
 
         # Exponential Moving Averages (Natively calculated)
         df_daily['20_EMA'] = df_daily['Close'].ewm(span=20, adjust=False).mean()
@@ -308,7 +308,7 @@ def run_screener():
         # Step 4: Write results to Google Sheet
         update_google_sheet(df_final, now)
     else:
-        print("\nNo stocks met all strict drawdown conditions (Weekly < -7%, Prev Day < -5%, Day < -3%).")
+        print("\nNo stocks met criteria (Weekly < -2%, Day < -1%).")
         update_google_sheet(None, now)
 
 if __name__ == "__main__":
