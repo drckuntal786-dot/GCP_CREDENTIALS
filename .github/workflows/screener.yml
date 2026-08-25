@@ -2,37 +2,33 @@ name: Run Stock Screener
 
 on:
   schedule:
-    - cron: '0 10 * * 1-5'  # 3:30 PM IST (10:00 AM UTC) Mon-Fri
-  workflow_dispatch:        # Allows manual trigger
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   run-screener:
     runs-on: ubuntu-latest
     steps:
-      # 1. Checkout repository files (CRITICAL STEP)
+      # यह पहला स्टेप होना बहुत जरूरी है!
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. Set up Python 3.11
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 3. Create credentials.json from GitHub Secrets
       - name: Setup Credentials
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: |
           echo "$GCP_CREDENTIALS" > credentials.json
 
-      # 4. Install dependencies
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 5. Run main.py
       - name: Run Screener
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
