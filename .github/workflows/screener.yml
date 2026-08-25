@@ -2,43 +2,38 @@ name: Run Stock Screener
 
 on:
   schedule:
-    # 09:15 AM IST is 03:45 AM UTC
-    - cron: '45 3 * * 1-5'
-    # 05:30 PM IST is 12:00 PM UTC
-    - cron: '0 12 * * 1-5'
-  workflow_dispatch: # Allows manual trigger from the GitHub Actions tab
+    - cron: '0 10 * * 1-5'  # Runs at 3:30 PM IST Mon-Fri
+  workflow_dispatch:
 
 jobs:
   run-screener:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
+      # Step 1: Checkout repository files (CRITICAL)
+      - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Step 2: Set up Python 3.11
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # Step 3: Decode GCP Credentials Secret
+      - name: Authenticate Google Cloud
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: |
+          echo "$GCP_CREDENTIALS" > credentials.json
+
+      # Step 4: Install Dependencies
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "setuptools<60.0.0"
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements.txt
 
-      - name: Create Credentials File
-        run: |
-          echo "$GCP_CREDENTIALS" > credentials.json
-        env:
-          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-
-      - name: Execute Screener Script
+      # Step 5: Run the Script
+      - name: Run Screener
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        run: |
-          python main.py
-
-      - name: Clean up Credentials
-        if: always()
-        run: rm -f credentials.json
+        run: python main.py
