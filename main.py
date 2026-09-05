@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import datetime
+import json
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -32,11 +33,31 @@ SCOPES = [
 ]
 
 def get_spreadsheet():
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        print(f"❌ ERROR: {SERVICE_ACCOUNT_FILE} not found!")
-        sys.exit(1)
+    # Priority 1: Check for JSON string stored directly in env variable
+    gcp_secret_env = os.environ.get("GCP_CREDENTIALS", "").strip()
+    
+    if gcp_secret_env:
+        try:
+            cred_info = json.loads(gcp_secret_env)
+            creds = Credentials.from_service_account_info(cred_info, scopes=SCOPES)
+        except Exception as e:
+            print(f"⚠️ Failed parsing GCP_CREDENTIALS environment secret: {e}")
+            creds = None
+    else:
+        creds = None
+
+    # Priority 2: Fall back to local service_account.json file
+    if creds is None:
+        if not os.path.exists(SERVICE_ACCOUNT_FILE):
+            print(f"❌ ERROR: Credentials file {SERVICE_ACCOUNT_FILE} not found and GCP_CREDENTIALS env var is missing/invalid!")
+            sys.exit(1)
         
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+        try:
+            creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+        except Exception as e:
+            print(f"❌ ERROR: Failed loading {SERVICE_ACCOUNT_FILE}: {e}")
+            sys.exit(1)
+
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID)
 
@@ -62,7 +83,9 @@ def calculate_rsi(series: pd.Series, period: int = 14) -> float:
     avg_loss = loss.rolling(window=period).mean()
     rs = avg_gain / (avg_loss + 1e-9)
     rsi = 100 - (100 / (1 + rs))
-    return float(rsi.iloc[-1])
+    
+    val = rsi.iloc[-1]
+    return float(val) if not np.isnan(val) else 50.0
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
     if len(df) < period + 1:
@@ -79,7 +102,8 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
     ], axis=1).max(axis=1)
     
     atr = tr.rolling(window=period).mean()
-    return float(atr.iloc[-1])
+    val = atr.iloc[-1]
+    return float(val) if not np.isnan(val) else float(df['Close'].iloc[-1] * 0.02)
 
 def get_atm_strike(spot_price: float) -> int:
     if spot_price >= 5000:
@@ -148,9 +172,9 @@ def analyze_short_stock(symbol: str, default_price: float = None, default_change
 # 4. Pipeline Core Tasks
 # ==========================================
 
-# Comprehensive F&O Universe across Nifty 50, Next 50, Bank Nifty & Midcaps
+# Comprehensive F&O Universe with valid Yahoo Finance symbols
 FNO_TICKERS = [
-    # --- NIFTY 50 & BANK NIFTY (Heavyweights) ---
+    # --- NIFTY 50 & BANK NIFTY ---
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "ITC",
     "SBIN", "LT", "BAJFINANCE", "HINDUNILVR", "AXISBANK", "KOTAKBANK",
     "MARUTI", "SUNPHARMA", "TATASTEEL", "NTPC", "POWERGRID", "PERSISTENT",
@@ -161,34 +185,34 @@ FNO_TICKERS = [
     "HINDALCO", "INDUSINDBK", "BEL", "VBL", "SHRIRAMFIN", "TRENT", "LTTS",
     "BANKBARODA", "PNB", "CANBK", "AUBANK", "IDFCFIRSTB", "FEDERALBNK",
 
-    # --- NIFTY NEXT 50 ---
+    # --- NIFTY NEXT 50 & LIQUID STOCKS ---
     "ABB", "ADANIGREEN", "ADANIPOWER", "AMBUJACEM", "ATGL", "BAJAJHLDNG",
     "BANKINDIA", "BOSCHLTD", "CGPOWER", "CHOLAFIN", "COLPAL", "DLF",
-    "GAIL", "GODREJCP", "HAVHAV", "ICICIGI", "ICICIPRULI", "IOC",
+    "GAIL", "GODREJCP", "HAVELLS", "ICICIGI", "ICICIPRULI", "IOC",
     "IRFC", "JINDALSTEL", "JIOFIN", "LODHA", "MAXHEALTH", "NAUKRI",
     "NHPC", "NMDC", "OIL", "PAYTM", "PFC", "PIDILITIND",
-    "POLYCAB", "REC", "SBICARD", "SIEMENS", "SRF", "TATAELXSI",
-    "TATAPOWER", "TORNTPHARM", "TUBEINVEST", "UNITDSPR", "ZOMATO",
+    "POLYCAB", "RECLTD", "SBICARD", "SIEMENS", "SRF", "TATAELXSI",
+    "TATAPOWER", "TORNTPHARM", "TIINDIA", "UNITDSPR", "ETWEEN",
 
-    # --- LIQUID MIDCAPS & POPULAR F&O STOCKS ---
+    # --- LIQUID MIDCAPS ---
     "AUROPHARMA", "BALKRISIND", "BANDHANBNK", "BERGEPAINT", "BHARATFORG",
     "BIOCON", "BSOFT", "CANFINHOME", "CHAMBLFERT", "COFORGE",
     "CONCOR", "COROMANDEL", "CROMPTON", "CUMMINSIND", "DABUR",
     "DALBHARAT", "DEEPAKNTR", "ESCORTS", "EXIDEIND", "GLENMARK",
-    "GMRINFRA", "GODREJPROP", "GRANULES", "GUJGASLTD", "HAL",
+    "GMRAIRPORT", "GODREJPROP", "GRANULES", "GUJGASLTD", "HAL",
     "HDFCAMC", "IEX", "IGL", "INDHOTEL", "INDIAMART",
-    "INDIGO", "INDUSTOWER", "IPCALAB", "JISLJALEQS", "JKCEMENT",
+    "INDIGO", "INDUSTOWER", "IPCALAB", "JKCEMENT",
     "JUBLFOOD", "KALYANKJIL", "KEI", "LALPATHLAB", "LICHSGFIN",
     "LUPIN", "MFSL", "MGL", "MOTHERSON", "MPHASIS",
     "MRF", "MUTHOOTFIN", "NATIONALUM", "NAVINFLUOR", "OBEROIRLTY",
-    "OFSS", "PAGEIND", "PETRONET", "PIIND", "PEL",
-    "PNBHOUSING", "RAMCOCEM", "RECLTD", "SAIL", "SBNN",
-    "SYNGENE", "TATACOMM", "TATACHEM", "TATASTEEL", "TVSMOTOR",
-    "UPL", "VOLTAS", "ZEEL"
+    "OFSS", "PAGEIND", "PETRONET", "PIIND", "PNBHOUSING",
+    "RAMCOCEM", "SAIL", "SJVN", "SYNGENE", "TATACOMM",
+    "TATACHEM", "TVSMOTOR", "UPL", "VOLTAS", "ZEEL"
 ]
 
 # De-duplicate ticker entries while retaining structure
 FNO_TICKERS = list(dict.fromkeys(FNO_TICKERS))
+
 def fetch_fno_top_losers(top_n: int = 15) -> pd.DataFrame:
     """Fetch live data for F&O universe and return top losers sorted by price change %."""
     print("🔍 Fetching market performance for F&O universe...")
@@ -219,7 +243,8 @@ def fetch_fno_top_losers(top_n: int = 15) -> pd.DataFrame:
                     })
                     
         df = pd.DataFrame(results)
-        df = df.sort_values(by="Day Return (%)", ascending=True).head(top_n)
+        if not df.empty:
+            df = df.sort_values(by="Day Return (%)", ascending=True).head(top_n)
         return df
 
     except Exception as e:
