@@ -1,55 +1,41 @@
-name: Run Stock Screener
+name: NSE F&O Losers & Execution Pipeline
 
 on:
   schedule:
-    # 1. Pre-Market Scan: 9:08 AM IST (3:38 AM UTC) Mon-Fri
-    - cron: '38 3 * * 1-5'
-    # 2. Execution Run: 9:30 AM IST (4:00 AM UTC) Mon-Fri
-    - cron: '0 4 * * 1-5'
-    # 3. Nightly Reset / Preparation Run: 3:30 AM IST (10:00 PM UTC Sun-Thu)
-    - cron: '0 22 * * 0-4'
-  workflow_dispatch:
+    # Runs every 15 minutes between 3:45 AM UTC and 10:00 AM UTC (9:15 AM to 3:30 PM IST), Mon-Fri
+    - cron: '*/15 3-10 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+  push:
+    branches:
+      - main
 
 jobs:
-  run-screener:
+  run-pipeline:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip' # Speeds up workflow runs
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install pandas numpy yfinance gspread google-auth; fi
+          pip install pandas numpy yfinance gspread google-auth
 
-      - name: Setup Credentials
+      - name: Authenticate Google Service Account
         env:
-          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
         run: |
-          echo "$GCP_CREDENTIALS" > service_account.json
+          echo "$SERVICE_ACCOUNT_JSON" > service_account.json
 
-      - name: Debug Workspace Directory
-        run: ls -la
-
-      - name: Set Run Phase Environment Variable
-        id: set-phase
-        run: |
-          if [ "${{ github.event.schedule }}" == "38 3 * * 1-5" ]; then
-            echo "RUN_MODE=PRE_MARKET" >> $GITHUB_ENV
-          elif [ "${{ github.event.schedule }}" == "0 22 * * 0-4" ]; then
-            echo "RUN_MODE=NIGHTLY_RESET" >> $GITHUB_ENV
-          else
-            echo "RUN_MODE=EXECUTION" >> $GITHUB_ENV
-          fi
-
-      - name: Run Screener
+      - name: Execute Python Pipeline
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          RUN_MODE: ${{ env.RUN_MODE }}
-        run: python main.py
+        run: |
+          python main.py
