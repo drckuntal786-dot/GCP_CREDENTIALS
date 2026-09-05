@@ -13,7 +13,7 @@ from google.oauth2.service_account import Credentials
 raw_id = (
     os.environ.get("SPREADSHEET_ID", "")
     or os.environ.get("SPREADSHEET_ID_SECRET", "")
-    or "1yfFGrDViitvuqPhSyDstFebsntpo7pZ8b0s4f-oYH4E"
+    or "1LSHDayXuQ43C8FNdn9bnxw-lFPkSTOrBjov1gme0t2g"
 )
 SPREADSHEET_ID = raw_id.strip().strip('"').strip("'")
 
