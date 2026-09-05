@@ -32,12 +32,24 @@ jobs:
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: |
-          echo "$GCP_CREDENTIALS" > credentials.json
+          echo "$GCP_CREDENTIALS" > service_account.json
 
       - name: Debug Workspace Directory
         run: ls -la
 
+      - name: Set Run Phase Environment Variable
+        id: set-phase
+        run: |
+          if [ "${{ github.event.schedule }}" == "38 3 * * 1-5" ]; then
+            echo "RUN_MODE=PRE_MARKET" >> $GITHUB_ENV
+          elif [ "${{ github.event.schedule }}" == "0 22 * * 0-4" ]; then
+            echo "RUN_MODE=NIGHTLY_RESET" >> $GITHUB_ENV
+          else
+            echo "RUN_MODE=EXECUTION" >> $GITHUB_ENV
+          fi
+
       - name: Run Screener
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          RUN_MODE: ${{ env.RUN_MODE }}
         run: python screener.py
