@@ -138,7 +138,6 @@ def analyze_stock(ticker: str, nifty_change_pct: float):
         volume = float(latest_day['Volume'])
         
         prev_close = float(prev_day['Close'])
-        prev_open = float(prev_day['Open'])
         prev_high = float(prev_day['High'])
         prev_low = float(prev_day['Low'])
         
@@ -252,14 +251,14 @@ def detect_run_phase() -> str:
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     hour, minute = now_utc.hour, now_utc.minute
 
-    # Schedule match (cron 38 3 * * 1-5 -> ~03:38 UTC)
-    if hour == 3 and 30 <= minute <= 45:
+    # Schedule match: cron 38 3 * * 1-5 (3:38 UTC)
+    if hour == 3 and 30 <= minute <= 50:
         return "PRE_MARKET"
-    # Schedule match (cron 0 4 * * 1-5 -> ~04:00 UTC)
-    elif hour == 4 and minute <= 15:
+    # Schedule match: cron 0 4 * * 1-5 (4:00 UTC)
+    elif hour == 4 and minute <= 30:
         return "EXECUTION"
-    # Schedule match (cron 0 22 * * 0-4 -> ~22:00 UTC)
-    elif hour == 22 and minute <= 15:
+    # Schedule match: cron 0 22 * * 0-4 (22:00 UTC)
+    elif hour == 22 and minute <= 30:
         return "NIGHTLY_RESET"
     
     # Default fallback for workflow_dispatch manual runs
@@ -269,13 +268,12 @@ def run_pre_market_scan():
     """Phase 1: Pre-Market Scan (9:08 AM IST / 03:38 AM UTC)"""
     print("🔍 Executing Pre-Market Scan...")
     sheet = get_sheet("PreMarket_Scan")
-    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     
-    # Optional light check / index gap check
     try:
         nifty = yf.Ticker("^NSEI").history(period="2d")
-        last_close = nifty['Close'].iloc[-1]
-    except Exception as e:
+        last_close = float(nifty['Close'].iloc[-1])
+    except Exception:
         last_close = 0.0
 
     sheet.clear()
@@ -289,8 +287,8 @@ def run_execution_screener():
     print(f"[{datetime.datetime.now()}] Fetching Nifty 50 Index Performance...")
     try:
         nifty = yf.Ticker("^NSEI").history(period="5d")
-        nifty_close = nifty['Close'].iloc[-1]
-        nifty_prev = nifty['Close'].iloc[-2]
+        nifty_close = float(nifty['Close'].iloc[-1])
+        nifty_prev = float(nifty['Close'].iloc[-2])
         nifty_change_pct = ((nifty_close - nifty_prev) / nifty_prev) * 100.0
     except Exception:
         nifty_change_pct = 0.0
@@ -309,14 +307,12 @@ def run_execution_screener():
         print("No data fetched.")
         return
 
-    # Filter and rank Top 5 Bullish (BTST) & Top 5 Bearish (STBT)
     top_bullish = df_results.sort_values(by="Bullish_Score", ascending=False).head(5)
     top_bearish = df_results.sort_values(by="Bearish_Score", ascending=False).head(5)
 
-    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     formatted_rows = []
 
-    # Format Bullish Entries
     for rank, (_, row) in enumerate(top_bullish.iterrows(), 1):
         action_label = "HIGH CONVICTION BUY" if row['Bullish_Score'] >= 80 else "STRONG BUY (BTST)"
         formatted_rows.append([
@@ -327,7 +323,6 @@ def run_execution_screener():
             row['Bull_Target'], row['Bull_SL'], f"{row['Bullish_Score']}/100", action_label
         ])
 
-    # Format Bearish Entries
     for rank, (_, row) in enumerate(top_bearish.iterrows(), 1):
         action_label = "HIGH CONVICTION SELL" if row['Bearish_Score'] >= 80 else "STRONG SELL (STBT)"
         formatted_rows.append([
@@ -355,8 +350,7 @@ def run_nightly_reset():
     print("🌙 Running Nightly Reset & Preparation...")
     sheet = get_sheet("BTST_STBT_Signals")
     
-    # Mark old signals as expired / archive state
-    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     reset_header = ["Status", "Last Reset Time", "Message"]
     reset_row = ["CLEARED", timestamp_str, "Sheet cleared in preparation for next trading day."]
     
@@ -378,7 +372,6 @@ if __name__ == "__main__":
     elif phase == "NIGHTLY_RESET":
         run_nightly_reset()
     else:
-        # Default to full execution run
         run_execution_screener()
 
     sys.exit(0)
