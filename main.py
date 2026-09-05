@@ -1,360 +1,384 @@
 import os
-import time
+import sys
+import datetime
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 
 # ==========================================
-# CONFIGURATION & CONSTANTS
+# 1. Environment & Google Sheets Config
 # ==========================================
+raw_id = (
+    os.environ.get("SPREADSHEET_ID", "")
+    or os.environ.get("SPREADSHEET_ID_SECRET", "")
+    or "1yfFGrDViitvuqPhSyDstFebsntpo7pZ8b0s4f-oYH4E"
+)
+SPREADSHEET_ID = raw_id.strip().strip('"').strip("'")
 
-# Read Spreadsheet ID from environment variable (GitHub Secrets) or fallback
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1LSHDayXuQ43C8FNdn9bnxw-lFPkSTOrBjov1gme0t2g")
-CREDENTIALS_FILE = "credentials.json"
+if "spreadsheets/d/" in SPREADSHEET_ID:
+    SPREADSHEET_ID = SPREADSHEET_ID.split("spreadsheets/d/")[1].split("/")[0]
 
-# Sectoral Indices to monitor (NSE Sector Indices on Yahoo Finance)
-SECTOR_INDICES = {
-    "NIFTY BANK": "^NSEBANK",
-    "NIFTY IT": "^CNXIT",
-    "NIFTY AUTO": "^CNXAUTO",
-    "NIFTY FMCG": "^CNXFMCG",
-    "NIFTY METAL": "^CNXMETAL",
-    "NIFTY REALTY": "^CNXREALTY",
-    "NIFTY PHARMA": "^CNXPHARMA",
-    "NIFTY ENERGY": "^CNXENERGY",
-    "NIFTY INFRA": "^CNXINFRA",
-    "NIFTY PSU BANK": "^CNXPSUBANK"
-}
+if not SPREADSHEET_ID:
+    print("❌ ERROR: SPREADSHEET_ID environment variable is missing!")
+    sys.exit(1)
 
-# Stock constituents categorized by Index (Sample F&O tickers mapped to .NS extension)
-INDEX_CONSTITUENTS = {
-    "NIFTY BANK": [
-        "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "KOTAKBANK.NS", 
-        "INDUSINDBK.NS", "BANKBARODA.NS", "PNB.NS", "AUBANK.NS", "FEDERALBNK.NS", 
-        "IDFCFIRSTB.NS", "BANDHANBNK.NS"
-    ],
-    "NIFTY IT": [
-        "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "LTIM.NS", 
-        "TECHM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "LTTS.NS"
-    ],
-    "NIFTY AUTO": [
-        "M&M.NS", "MARUTI.NS", "TATAMOTORS.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", 
-        "HEROMOTOCO.NS", "TVSMOTOR.NS", "BHARATFORG.NS", "BALKRISIND.NS", "TIINDIA.NS", 
-        "BOSCHLTD.NS", "MRF.NS", "MOTHERSON.NS"
-    ],
-    "NIFTY FMCG": [
-        "ITC.NS", "HINDUNILVR.NS", "NESTLEIND.NS", "TATACONSUM.NS", "BRITANNIA.NS", 
-        "GODREJCP.NS", "DABUR.NS", "MARICO.NS", "COLPAL.NS", "VBL.NS", 
-        "UNITEDSPR.NS", "RADICO.NS"
-    ],
-    "NIFTY METAL": [
-        "TATASTEEL.NS", "HINDALCO.NS", "VEDL.NS", "JSL.NS", "JINDALSTEL.NS", 
-        "NMDC.NS", "SAIL.NS", "NATIONALUM.NS", "APLAPOLLO.NS", "HINDZINC.NS"
-    ],
-    "NIFTY REALTY": [
-        "DLF.NS", "LODHA.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PRESTIGE.NS", 
-        "PHOENIXLTD.NS", "BRIGADE.NS", "SOBHA.NS"
-    ],
-    "NIFTY PHARMA": [
-        "SUNPHARMA.NS", "CIPLA.NS", "DRREDDY.NS", "DIVISLAB.NS", "LUPIN.NS", 
-        "TORNTPHARM.NS", "ZYDUSLIFE.NS", "ALKEM.NS", "MANKIND.NS", "BIOCON.NS", 
-        "AUROPHARMA.NS", "GLENMARK.NS"
-    ],
-    "NIFTY ENERGY": [
-        "RELIANCE.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS", "COALINDIA.NS", 
-        "BPCL.NS", "IOC.NS", "GAIL.NS", "TATAPOWER.NS", "ADANIGREEN.NS"
-    ],
-    "NIFTY INFRA": [
-        "LT.NS", "RELIANCE.NS", "BHARTIARTL.NS", "NTPC.NS", "POWERGRID.NS", 
-        "ULTRACEMCO.NS", "GRASIM.NS", "ONGC.NS", "COALINDIA.NS", "CONCOR.NS"
-    ],
-    "NIFTY PSU BANK": [
-        "SBIN.NS", "BANKBARODA.NS", "PNB.NS", "CANBK.NS", "UNIONBANK.NS", 
-        "INDIANB.NS", "IOB.NS", "BANKINDIA.NS", "CENTRALBK.NS", "UCOBANK.NS"
-    ]
-}
-
-# Expected headers for Google Sheet alignment
-EXPECTED_HEADERS = [
-    "Run Date", "Run Time", "Rank", "Ticker", "Index / Category", 
-    "Current Price", "Day Return (%)", "Prev Day Return (%)", 
-    "Weekly Return (%)", "VWAP", "20 EMA", "Supertrend", "Short Trade Trigger"
+SERVICE_ACCOUNT_FILE = "service_account.json"
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
 ]
 
-# ==========================================
-# HELPER FUNCTIONS FOR CALCULATIONS & GOOGLE SHEETS
-# ==========================================
-
-def get_gspread_client():
-    """Authenticates and returns the Google Sheet worksheet."""
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+def get_sheet(sheet_name: str = "BTST_STBT_Signals"):
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        print(f"❌ ERROR: {SERVICE_ACCOUNT_FILE} not found!")
+        sys.exit(1)
+        
+    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-    return sheet
+    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+    
+    try:
+        worksheet = spreadsheet.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="300", cols="30")
+    
+    return worksheet
 
 
-def flatten_yf_df(df):
-    """Flattens MultiIndex columns returned by recent yfinance versions."""
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
+# ==========================================
+# 2. Indicator Calculation Helpers
+# ==========================================
+def calculate_rsi(series: pd.Series, period: int = 14) -> float:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / (avg_loss + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    return float(rsi.iloc[-1])
 
+def calculate_cpr(prev_high: float, prev_low: float, prev_close: float):
+    pivot = (prev_high + prev_low + prev_close) / 3.0
+    bc = (prev_high + prev_low) / 2.0
+    tc = (pivot - bc) + pivot
+    cpr_high = max(pivot, bc, tc)
+    cpr_low = min(pivot, bc, tc)
+    return pivot, cpr_high, cpr_low
 
-def compute_supertrend(df, period=10, multiplier=3):
-    """Calculates Supertrend (10,3) natively using pure pandas."""
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
     high = df['High']
     low = df['Low']
-    close = df['Close']
+    close = df['Close'].shift(1)
     
-    # Calculate Average True Range (ATR)
-    price_diff1 = high - low
-    price_diff2 = (high - close.shift(1)).abs()
-    price_diff3 = (low - close.shift(1)).abs()
-    tr = pd.concat([price_diff1, price_diff2, price_diff3], axis=1).max(axis=1)
-    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    tr = pd.concat([
+        high - low,
+        (high - close).abs(),
+        (low - close).abs()
+    ], axis=1).max(axis=1)
     
-    hl2 = (high + low) / 2
-    basic_ub = hl2 + (multiplier * atr)
-    basic_lb = hl2 - (multiplier * atr)
-    
-    final_ub = pd.Series(0.0, index=df.index)
-    final_lb = pd.Series(0.0, index=df.index)
-    supertrend = pd.Series(0.0, index=df.index)
-    direction = pd.Series(1, index=df.index)  # 1 = Bullish, -1 = Bearish
-    
-    for i in range(1, len(df)):
-        # Upper band calculation
-        if basic_ub.iloc[i] < final_ub.iloc[i-1] or close.iloc[i-1] > final_ub.iloc[i-1]:
-            final_ub.iloc[i] = basic_ub.iloc[i]
-        else:
-            final_ub.iloc[i] = final_ub.iloc[i-1]
-            
-        # Lower band calculation
-        if basic_lb.iloc[i] > final_lb.iloc[i-1] or close.iloc[i-1] < final_lb.iloc[i-1]:
-            final_lb.iloc[i] = basic_lb.iloc[i]
-        else:
-            final_lb.iloc[i] = final_lb.iloc[i-1]
-            
-        # Trend direction determination
-        if direction.iloc[i-1] == 1:
-            if close.iloc[i] < final_lb.iloc[i]:
-                direction.iloc[i] = -1
-                supertrend.iloc[i] = final_ub.iloc[i]
-            else:
-                direction.iloc[i] = 1
-                supertrend.iloc[i] = final_lb.iloc[i]
-        else:
-            if close.iloc[i] > final_ub.iloc[i]:
-                direction.iloc[i] = 1
-                supertrend.iloc[i] = final_lb.iloc[i]
-            else:
-                direction.iloc[i] = -1
-                supertrend.iloc[i] = final_ub.iloc[i]
-                
-    return supertrend, direction
+    atr = tr.rolling(window=period).mean()
+    return float(atr.iloc[-1])
+
+def get_atm_strike(spot_price: float) -> int:
+    if spot_price >= 5000:
+        step = 100
+    elif spot_price >= 1000:
+        step = 50
+    elif spot_price >= 250:
+        step = 20
+    else:
+        step = 10
+    return int(round(spot_price / step) * step)
 
 
-def get_sector_crackdowns():
-    """Identifies sectors that cracked down by >= 1% today."""
-    cracked_sectors = []
-    print("--- Step 1: Checking Sector Performance ---")
-    for name, ticker in SECTOR_INDICES.items():
-        try:
-            data = yf.download(ticker, period="5d", progress=False)
-            data = flatten_yf_df(data)
-            if len(data) >= 2:
-                prev_close = float(data['Close'].iloc[-2])
-                curr_close = float(data['Close'].iloc[-1])
-                day_change = ((curr_close - prev_close) / prev_close) * 100
-                
-                if day_change <= -1.0:
-                    cracked_sectors.append(name)
-                    print(f"[CRACKED] {name}: {day_change:.2f}%")
-                else:
-                    print(f"[OK] {name}: {day_change:.2f}%")
-        except Exception as e:
-            print(f"Error fetching sector {name}: {e}")
-    return cracked_sectors
+# ==========================================
+# 3. Liquid Nifty F&O Universe
+# ==========================================
+NIFTY_FNO_UNIVERSE = [
+    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS",
+    "BHARTIARTL.NS", "AXISBANK.NS", "KOTAKBANK.NS", "LT.NS", "TATAMOTORS.NS",
+    "TATASTEEL.NS", "NTPC.NS", "POWERGRID.NS", "HCLTECH.NS", "MARUTI.NS",
+    "SUNPHARMA.NS", "TITAN.NS", "ULTRACEMCO.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS",
+    "ASIANPAINT.NS", "NESTLEIND.NS", "JSWSTEEL.NS", "GRASIM.NS", "HEROMOTOCO.NS",
+    "EICHERMOT.NS", "COALINDIA.NS", "BPCL.NS", "ONGC.NS", "HINDALCO.NS",
+    "ADANIENT.NS", "ADANIPORTS.NS", "TECHM.NS", "WIPRO.NS", "DIVISLAB.NS",
+    "DRREDDY.NS", "CIPLA.NS", "APOLLOHOSP.NS", "TATACONSUM.NS", "BRITANNIA.NS"
+]
 
 
-def compute_vwap_intraday(ticker):
-    """Fetches 5-minute intraday data to calculate true Intraday VWAP."""
+# ==========================================
+# 4. Multi-Factor Stock Screener
+# ==========================================
+def analyze_stock(ticker: str, nifty_change_pct: float):
     try:
-        df_intraday = yf.download(ticker, period="1d", interval="5m", progress=False)
-        df_intraday = flatten_yf_df(df_intraday)
-        if df_intraday.empty:
-            return 0.0
-        
-        tp = (df_intraday['High'] + df_intraday['Low'] + df_intraday['Close']) / 3
-        vwap = (tp * df_intraday['Volume']).sum() / df_intraday['Volume'].sum()
-        return float(vwap)
-    except Exception:
-        return 0.0
-
-
-def analyze_stock(ticker):
-    """Fetches stock data and evaluates bearish criteria."""
-    try:
-        df_daily = yf.download(ticker, period="1mo", interval="1d", progress=False)
-        df_daily = flatten_yf_df(df_daily)
-        
-        if len(df_daily) < 10:
+        # Fetch Daily Data (1 year)
+        df_daily = yf.download(ticker, period="1y", interval="1d", progress=False)
+        if len(df_daily) < 50:
             return None
-
-        # Price metrics
-        curr_price = float(df_daily['Close'].iloc[-1])
-        prev_close = float(df_daily['Close'].iloc[-2])
-        prev_prev_close = float(df_daily['Close'].iloc[-3])
+            
+        # Fetch Intraday 15M Data for ORB
+        df_15m = yf.download(ticker, period="5d", interval="15m", progress=False)
         
-        day_change = ((curr_price - prev_close) / prev_close) * 100
-        prev_day_change = ((prev_close - prev_prev_close) / prev_prev_close) * 100
+        # Flatten MultiIndex headers if returned by yfinance
+        if isinstance(df_daily.columns, pd.MultiIndex):
+            df_daily.columns = df_daily.columns.get_level_values(0)
+        if len(df_15m) > 0 and isinstance(df_15m.columns, pd.MultiIndex):
+            df_15m.columns = df_15m.columns.get_level_values(0)
+
+        latest_day = df_daily.iloc[-1]
+        prev_day = df_daily.iloc[-2]
         
-        weekly_close_5d_ago = float(df_daily['Close'].iloc[-6]) if len(df_daily) >= 6 else float(df_daily['Close'].iloc[0])
-        weekly_change = ((curr_price - weekly_close_5d_ago) / weekly_close_5d_ago) * 100
-
-        # Filter Condition: Weekly < -2.0% and Daily < -1.0%
-        is_bearish_pass = (weekly_change < -2.0) and (day_change < -1.0)
-
-        # Exponential Moving Averages (Natively calculated)
-        df_daily['20_EMA'] = df_daily['Close'].ewm(span=20, adjust=False).mean()
-        df_daily['9_EMA'] = df_daily['Close'].ewm(span=9, adjust=False).mean()
-        df_daily['21_EMA'] = df_daily['Close'].ewm(span=21, adjust=False).mean()
+        close_price = float(latest_day['Close'])
+        open_price = float(latest_day['Open'])
+        high_price = float(latest_day['High'])
+        low_price = float(latest_day['Low'])
+        volume = float(latest_day['Volume'])
         
-        # Supertrend (Natively calculated)
-        st_vals, st_dirs = compute_supertrend(df_daily, period=10, multiplier=3)
-        df_daily['Supertrend'] = st_vals
-        df_daily['ST_Direction'] = st_dirs
+        prev_close = float(prev_day['Close'])
+        prev_open = float(prev_day['Open'])
+        prev_high = float(prev_day['High'])
+        prev_low = float(prev_day['Low'])
+        
+        # 1. Price Momentum & Relative Strength vs Nifty 50
+        price_change_pct = ((close_price - prev_close) / prev_close) * 100.0
+        relative_strength = price_change_pct - nifty_change_pct
 
-        # Fetch Intraday VWAP
-        vwap = compute_vwap_intraday(ticker)
+        # 2. Moving Average Alignment (20 & 50 EMA)
+        ema20 = float(df_daily['Close'].ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50 = float(df_daily['Close'].ewm(span=50, adjust=False).mean().iloc[-1])
+        bullish_ema = (close_price > ema20) and (ema20 > ema50)
+        bearish_ema = (close_price < ema20) and (ema20 < ema50)
 
-        # Signal Metrics
-        ema_9 = float(df_daily['9_EMA'].iloc[-1])
-        ema_21 = float(df_daily['21_EMA'].iloc[-1])
-        ema_20 = float(df_daily['20_EMA'].iloc[-1])
-        supertrend = float(df_daily['Supertrend'].iloc[-1])
-        st_direction = int(df_daily['ST_Direction'].iloc[-1])
+        # 3. Volume Surge vs 10-day Average
+        vol_10d_avg = float(df_daily['Volume'].iloc[-11:-1].mean())
+        vol_surge_ratio = volume / vol_10d_avg if vol_10d_avg > 0 else 0
+        volume_check = vol_surge_ratio >= 1.8
 
-        short_signal = (
-            (curr_price < ema_9) and 
-            (ema_9 < ema_21) and 
-            (curr_price < vwap if vwap > 0 else True) and 
-            (st_direction == -1)
-        )
+        # 4. RSI Bounds
+        rsi = calculate_rsi(df_daily['Close'])
+        bullish_rsi = (60.0 <= rsi <= 75.0)
+        bearish_rsi = (25.0 <= rsi <= 40.0)
+
+        # 5. CPR Status
+        _, cpr_high, cpr_low = calculate_cpr(prev_high, prev_low, prev_close)
+        above_cpr_high = close_price > cpr_high
+        below_cpr_low = close_price < cpr_low
+
+        # 6. 52-Week High Proximity
+        high_52w = float(df_daily['High'].max())
+        pct_52w_high = (high_price / high_52w) * 100.0
+
+        # 7. Day Range Close Position
+        day_range = high_price - low_price
+        close_pos_pct = ((close_price - low_price) / day_range) * 100.0 if day_range > 0 else 50.0
+        closing_near_high = close_pos_pct >= 80.0
+        closing_near_low = close_pos_pct <= 20.0
+
+        # 8. 15-Min ORB Breakout Check
+        orb_breakout_bull = False
+        orb_breakout_bear = False
+        if len(df_15m) >= 2:
+            first_15m_high = float(df_15m['High'].iloc[0])
+            first_15m_low = float(df_15m['Low'].iloc[0])
+            orb_breakout_bull = close_price > first_15m_high
+            orb_breakout_bear = close_price < first_15m_low
+
+        # 9. ATR Target & Stop Loss
+        atr = calculate_atr(df_daily)
+        btst_target = round(close_price + (1.2 * atr), 2)
+        btst_sl = round(close_price - (0.8 * atr), 2)
+        stbt_target = round(close_price - (1.2 * atr), 2)
+        stbt_sl = round(close_price + (0.8 * atr), 2)
+
+        # ATM Option Strike Selection
+        clean_symbol = ticker.replace(".NS", "")
+        atm_strike = get_atm_strike(close_price)
+
+        # Composite Ranking Scores (0-100 Scale)
+        bullish_score = 0
+        if bullish_rsi: bullish_score += 20
+        if volume_check: bullish_score += 20
+        if bullish_ema: bullish_score += 15
+        if relative_strength > 1.0: bullish_score += 15
+        if above_cpr_high: bullish_score += 10
+        if orb_breakout_bull: bullish_score += 10
+        if closing_near_high: bullish_score += 10
+
+        bearish_score = 0
+        if bearish_rsi: bearish_score += 20
+        if volume_check: bearish_score += 20
+        if bearish_ema: bearish_score += 15
+        if relative_strength < -1.0: bearish_score += 15
+        if below_cpr_low: bearish_score += 10
+        if orb_breakout_bear: bearish_score += 10
+        if closing_near_low: bearish_score += 10
 
         return {
-            "Ticker": ticker.replace(".NS", ""),
-            "Current Price": round(curr_price, 2),
-            "Day Return (%)": round(day_change, 2),
-            "Prev Day Return (%)": round(prev_day_change, 2),
-            "Weekly Return (%)": round(weekly_change, 2),
-            "VWAP": round(vwap, 2),
-            "20 EMA": round(ema_20, 2),
-            "9 EMA": round(ema_9, 2),
-            "21 EMA": round(ema_21, 2),
-            "Supertrend": round(supertrend, 2),
-            "Bearish Criteria Met": is_bearish_pass,
-            "Short Trade Trigger": "SELL CONFIRMED" if short_signal else "WAIT"
+            "Symbol": clean_symbol,
+            "Close": round(close_price, 2),
+            "Price_Change_%": round(price_change_pct, 2),
+            "Rel_Strength": round(relative_strength, 2),
+            "RSI": round(rsi, 2),
+            "Vol_Surge_x": round(vol_surge_ratio, 2),
+            "Close_Pos_%": round(close_pos_pct, 1),
+            "CPR_Status": "ABOVE CPR HIGH" if above_cpr_high else ("BELOW CPR LOW" if below_cpr_low else "INSIDE CPR"),
+            "EMA_Trend": "BULLISH (20>50)" if bullish_ema else ("BEARISH (20<50)" if bearish_ema else "NEUTRAL"),
+            "%_52W_High": round(pct_52w_high, 1),
+            "ATM_Strike": atm_strike,
+            "Bull_Target": btst_target,
+            "Bull_SL": btst_sl,
+            "Bear_Target": stbt_target,
+            "Bear_SL": stbt_sl,
+            "Bullish_Score": bullish_score,
+            "Bearish_Score": bearish_score
         }
     except Exception as e:
-        print(f"Error analyzing {ticker}: {e}")
+        print(f"Skipping {ticker}: {e}")
         return None
 
 
-def update_google_sheet(df_results, run_timestamp):
-    """Appends screener results into Google Sheets and enforces header existence."""
+# ==========================================
+# 5. Pipeline Tasks & Schedule Routines
+# ==========================================
+def detect_run_phase() -> str:
+    """Detect run phase from ENV variable or system UTC hour/minute."""
+    env_mode = os.environ.get("RUN_MODE", "").strip().upper()
+    if env_mode in ["PRE_MARKET", "EXECUTION", "NIGHTLY_RESET"]:
+        return env_mode
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    hour, minute = now_utc.hour, now_utc.minute
+
+    # Schedule match (cron 38 3 * * 1-5 -> ~03:38 UTC)
+    if hour == 3 and 30 <= minute <= 45:
+        return "PRE_MARKET"
+    # Schedule match (cron 0 4 * * 1-5 -> ~04:00 UTC)
+    elif hour == 4 and minute <= 15:
+        return "EXECUTION"
+    # Schedule match (cron 0 22 * * 0-4 -> ~22:00 UTC)
+    elif hour == 22 and minute <= 15:
+        return "NIGHTLY_RESET"
+    
+    # Default fallback for workflow_dispatch manual runs
+    return "EXECUTION"
+
+def run_pre_market_scan():
+    """Phase 1: Pre-Market Scan (9:08 AM IST / 03:38 AM UTC)"""
+    print("🔍 Executing Pre-Market Scan...")
+    sheet = get_sheet("PreMarket_Scan")
+    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Optional light check / index gap check
     try:
-        sheet = get_gspread_client()
-        existing_records = sheet.get_all_values()
-        
-        # Check if sheet is empty or if Row 1 is NOT equal to the expected header
-        if not existing_records or existing_records[0] != EXPECTED_HEADERS:
-            sheet.insert_row(EXPECTED_HEADERS, index=1)
-            print("[INFO] Missing or incorrect headers detected. Added header row to Row 1.")
-
-        date_str = run_timestamp.strftime("%Y-%m-%d")
-        time_str = run_timestamp.strftime("%H:%M:%S")
-
-        if df_results is not None and not df_results.empty:
-            rows_to_append = []
-            for _, row in df_results.iterrows():
-                row_data = [
-                    date_str,
-                    time_str,
-                    int(row['Rank']),
-                    str(row['Ticker']),
-                    str(row['Index / Category']),
-                    float(row['Current Price']),
-                    float(row['Day Return (%)']),
-                    float(row['Prev Day Return (%)']),
-                    float(row['Weekly Return (%)']),
-                    float(row['VWAP']),
-                    float(row['20 EMA']),
-                    float(row['Supertrend']),
-                    str(row['Short Trade Trigger'])
-                ]
-                rows_to_append.append(row_data)
-
-            sheet.append_rows(rows_to_append)
-            print(f"[SUCCESS] Successfully appended {len(rows_to_append)} rows to Google Sheet.")
-        else:
-            # Append a status row when no stocks meet criteria
-            no_data_row = [date_str, time_str, 0, "N/A", "N/A", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "NO SIGNALS MET"]
-            sheet.append_row(no_data_row)
-            print("[INFO] Appended 'NO SIGNALS MET' entry to Google Sheet.")
-            
+        nifty = yf.Ticker("^NSEI").history(period="2d")
+        last_close = nifty['Close'].iloc[-1]
     except Exception as e:
-        print(f"[ERROR] Failed to update Google Sheet: {e}")
+        last_close = 0.0
 
-# ==========================================
-# MAIN EXECUTION ROUTINE
-# ==========================================
+    sheet.clear()
+    headers = ["Timestamp", "Phase", "Status", "Nifty Prev Close"]
+    sheet.append_row(headers)
+    sheet.append_row([timestamp_str, "Pre-Market Scan", "COMPLETED", round(last_close, 2)])
+    print("✓ Pre-Market Scan complete!")
 
-def run_screener():
-    now = datetime.now()
-    print(f"\n==================================================")
-    print(f" Running Screener Execution at: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"==================================================")
+def run_execution_screener():
+    """Phase 2: Full Strategy Execution Run (9:30 AM IST / 04:00 AM UTC)"""
+    print(f"[{datetime.datetime.now()}] Fetching Nifty 50 Index Performance...")
+    try:
+        nifty = yf.Ticker("^NSEI").history(period="5d")
+        nifty_close = nifty['Close'].iloc[-1]
+        nifty_prev = nifty['Close'].iloc[-2]
+        nifty_change_pct = ((nifty_close - nifty_prev) / nifty_prev) * 100.0
+    except Exception:
+        nifty_change_pct = 0.0
+
+    print(f"Index (Nifty 50) Day Change: {nifty_change_pct:.2f}%")
+    sheet = get_sheet("BTST_STBT_Signals")
     
-    # Step 1: Detect cracked sectors
-    get_sector_crackdowns()
-    
-    # Step 2: Screen Index Members
     results = []
-    print("\n--- Step 2 & 3: Screening Index Members ---")
+    for ticker in NIFTY_FNO_UNIVERSE:
+        data = analyze_stock(ticker, nifty_change_pct)
+        if data:
+            results.append(data)
+
+    df_results = pd.DataFrame(results)
+    if df_results.empty:
+        print("No data fetched.")
+        return
+
+    # Filter and rank Top 5 Bullish (BTST) & Top 5 Bearish (STBT)
+    top_bullish = df_results.sort_values(by="Bullish_Score", ascending=False).head(5)
+    top_bearish = df_results.sort_values(by="Bearish_Score", ascending=False).head(5)
+
+    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    formatted_rows = []
+
+    # Format Bullish Entries
+    for rank, (_, row) in enumerate(top_bullish.iterrows(), 1):
+        action_label = "HIGH CONVICTION BUY" if row['Bullish_Score'] >= 80 else "STRONG BUY (BTST)"
+        formatted_rows.append([
+            "BTST (Bullish)", rank, timestamp_str, row['Symbol'], row['Close'],
+            f"{row['Price_Change_%']}%", f"+{row['Rel_Strength']}%", row['RSI'],
+            f"{row['Vol_Surge_x']}x", f"{row['Close_Pos_%']}%", row['CPR_Status'],
+            row['EMA_Trend'], f"{row['%_52W_High']}%", f"BUY {row['ATM_Strike']} CE",
+            row['Bull_Target'], row['Bull_SL'], f"{row['Bullish_Score']}/100", action_label
+        ])
+
+    # Format Bearish Entries
+    for rank, (_, row) in enumerate(top_bearish.iterrows(), 1):
+        action_label = "HIGH CONVICTION SELL" if row['Bearish_Score'] >= 80 else "STRONG SELL (STBT)"
+        formatted_rows.append([
+            "STBT (Bearish)", rank, timestamp_str, row['Symbol'], row['Close'],
+            f"{row['Price_Change_%']}%", f"{row['Rel_Strength']}%", row['RSI'],
+            f"{row['Vol_Surge_x']}x", f"{row['Close_Pos_%']}%", row['CPR_Status'],
+            row['EMA_Trend'], f"{row['%_52W_High']}%", f"BUY {row['ATM_Strike']} PE",
+            row['Bear_Target'], row['Bear_SL'], f"{row['Bearish_Score']}/100", action_label
+        ])
+
+    headers = [
+        "Signal Type", "Rank", "Timestamp", "Ticker", "Close Price", "% Change",
+        "Rel Strength (vs Nifty)", "RSI (14)", "Volume Surge", "Close Range %",
+        "CPR Status", "EMA Trend (20/50)", "% of 52W High", "Suggested Option",
+        "Target Price (ATR)", "Stop Loss (ATR)", "Quality Score", "Final Action"
+    ]
+
+    sheet.clear()
+    sheet.append_row(headers)
+    sheet.append_rows(formatted_rows)
+    print(f"✓ Google Sheet successfully updated with {len(formatted_rows)} ranked trades!")
+
+def run_nightly_reset():
+    """Phase 3: Nightly Reset / Preparation Run (3:30 AM IST / 10:00 PM UTC)"""
+    print("🌙 Running Nightly Reset & Preparation...")
+    sheet = get_sheet("BTST_STBT_Signals")
     
-    for index_name, ticker_list in INDEX_CONSTITUENTS.items():
-        for ticker in set(ticker_list):
-            stock_data = analyze_stock(ticker)
-            if stock_data and stock_data['Bearish Criteria Met']:
-                stock_data['Index / Category'] = index_name
-                results.append(stock_data)
+    # Mark old signals as expired / archive state
+    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reset_header = ["Status", "Last Reset Time", "Message"]
+    reset_row = ["CLEARED", timestamp_str, "Sheet cleared in preparation for next trading day."]
+    
+    sheet.clear()
+    sheet.append_row(reset_header)
+    sheet.append_row(reset_row)
+    print("✓ Nightly reset completed successfully!")
 
-    # Step 3: Process and Export Results
-    if results:
-        df_results = pd.DataFrame(results)
-        df_results = df_results.sort_values(by="Day Return (%)", ascending=True)
-        df_results['Rank'] = range(1, len(df_results) + 1)
-        
-        cols = ['Rank', 'Ticker', 'Index / Category', 'Current Price', 'Day Return (%)', 
-                'Prev Day Return (%)', 'Weekly Return (%)', 'VWAP', '20 EMA', 'Supertrend', 'Short Trade Trigger']
-        
-        df_final = df_results[cols]
-        print("\n================ FINAL BEARISH BREAKOUT RESULTS ================")
-        print(df_final.to_string(index=False))
-        
-        # Step 4: Write results to Google Sheet
-        update_google_sheet(df_final, now)
-    else:
-        print("\nNo stocks met criteria (Weekly < -2%, Day < -1%).")
-        update_google_sheet(None, now)
 
+# ==========================================
+# 6. Main Controller Entrypoint
+# ==========================================
 if __name__ == "__main__":
-    run_screener()
+    phase = detect_run_phase()
+    print(f"🚀 Execution started for phase: [{phase}]")
+
+    if phase == "PRE_MARKET":
+        run_pre_market_scan()
+    elif phase == "NIGHTLY_RESET":
+        run_nightly_reset()
+    else:
+        # Default to full execution run
+        run_execution_screener()
+
+    sys.exit(0)
