@@ -97,10 +97,6 @@ def get_atm_strike(spot_price: float) -> int:
 # 3. Short Trade Technical Analysis Engine
 # ==========================================
 def analyze_short_stock(symbol: str, default_price: float = None, default_change: float = None):
-    """
-    Downloads historical data for additional analytics (RSI, ATR, Options strike).
-    Falls back gracefully if live historical download fails.
-    """
     clean_symbol = symbol.replace(".NS", "").strip()
     ticker = f"{clean_symbol}.NS"
     
@@ -149,19 +145,14 @@ def analyze_short_stock(symbol: str, default_price: float = None, default_change
 
 
 # ==========================================
-# 4. Pipeline Core Tasks & Google Sheet Processor
+# 4. Pipeline Core Tasks
 # ==========================================
 def process_short_execution():
-    """
-    Reads Sheet1, finds stocks where 'Short Trade Trigger' == 'SELL CONFIRMED',
-    calculates trade execution targets, and writes results to the 'Execution' sheet.
-    """
     timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[{timestamp_str}] 📥 Fetching data from Sheet1...")
 
     spreadsheet = get_spreadsheet()
     
-    # Try finding 'Sheet1' or standard first worksheet
     try:
         source_sheet = spreadsheet.worksheet("Sheet1")
     except gspread.exceptions.WorksheetNotFound:
@@ -175,7 +166,6 @@ def process_short_execution():
     confirmed_short_trades = []
 
     for row in records:
-        # Standardized column fetching to match user's provided structure
         ticker = str(row.get("Ticker", "") or row.get("Stock", "") or row.get("Symbol", "")).strip()
         trigger_status = str(row.get("Short Trade Trigger", "") or row.get("Trigger", "") or row.get("Status", "")).strip().upper()
         
@@ -185,7 +175,6 @@ def process_short_execution():
         if not ticker:
             continue
 
-        # Condition Check: Is the Short Trade Trigger marked as "SELL CONFIRMED"?
         if trigger_status == "SELL CONFIRMED":
             print(f"🎯 'SELL CONFIRMED' detected for: {ticker}")
             analysis = analyze_short_stock(ticker, default_price=current_price, default_change=day_return)
@@ -204,7 +193,6 @@ def process_short_execution():
                     analysis['Signal']
                 ])
 
-    # Target Sheet: Execution
     exec_sheet = get_sheet("Execution")
     
     headers = [
@@ -224,7 +212,6 @@ def process_short_execution():
 
 
 def run_nightly_reset():
-    """Resets execution log at end of trading session."""
     print("🌙 Running Nightly Reset...")
     sheet = get_sheet("Execution")
     timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -236,51 +223,19 @@ def run_nightly_reset():
 
 
 # ==========================================
-# 5. Continuous Daily Scheduler (Auto-Run Engine)
+# 5. Main Execution Entrypoint
 # ==========================================
-def run_daily_scheduler(check_interval_seconds: int = 300):
-    """
-    Auto-runs during IST market hours (9:15 AM - 3:30 PM IST) every 5 minutes (default),
-    and triggers a Nightly Reset after market close.
-    """
-    print("==================================================")
-    print("🚀 Auto Scheduler Engine Started")
-    print("📊 Monitoring Sheet1 for SELL CONFIRMED signals...")
-    print("==================================================")
-
-    # IST Offset: UTC + 5:30
-    ist_offset = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-
-    while True:
-        try:
-            now_ist = datetime.datetime.now(ist_offset)
-            weekday = now_ist.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
-            current_time = now_ist.time()
-
-            market_start = datetime.time(9, 15)
-            market_end = datetime.time(15, 30)
-            reset_time_start = datetime.time(15, 35)
-            reset_time_end = datetime.time(15, 45)
-
-            # Weekday Check (Monday - Friday)
-            if weekday < 5:
-                if market_start <= current_time <= market_end:
-                    print(f"⏰ [IST {now_ist.strftime('%H:%M:%S')}] Active Trading Hours. Running Scanner...")
-                    process_short_execution()
-                elif reset_time_start <= current_time <= reset_time_end:
-                    print(f"⏰ [IST {now_ist.strftime('%H:%M:%S')}] Post Market Hours. Triggering Reset...")
-                    run_nightly_reset()
-                else:
-                    print(f"💤 [IST {now_ist.strftime('%H:%M:%S')}] Market Closed. Sleeping...")
-            else:
-                print(f"💤 [IST {now_ist.strftime('%Y-%m-%d %H:%M:%S')}] Weekend - Market Closed. Sleeping...")
-
-        except Exception as e:
-            print(f"❌ Error in Scheduler Loop: {e}")
-
-        time.sleep(check_interval_seconds)
-
-
 if __name__ == "__main__":
-    # Runs scheduler continuously. Re-checks every 5 minutes (300 seconds).
-    run_daily_scheduler(check_interval_seconds=300)
+    run_mode = os.environ.get("RUN_MODE", "").strip().upper()
+    print(f"🚀 Main script triggered with RUN_MODE: [{run_mode or 'DEFAULT_SCHEDULER'}]")
+
+    if run_mode == "EXECUTION":
+        process_short_execution()
+        sys.exit(0)
+    elif run_mode == "NIGHTLY_RESET":
+        run_nightly_reset()
+        sys.exit(0)
+    else:
+        # Fallback to single execution for automated actions/CI pipelines
+        process_short_execution()
+        sys.exit(0)
