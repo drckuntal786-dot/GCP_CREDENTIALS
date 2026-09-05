@@ -148,18 +148,47 @@ def analyze_short_stock(symbol: str, default_price: float = None, default_change
 # 4. Pipeline Core Tasks
 # ==========================================
 
-# Major F&O Stock Universe (NSE India)
+# Comprehensive F&O Universe across Nifty 50, Next 50, Bank Nifty & Midcaps
 FNO_TICKERS = [
+    # --- NIFTY 50 & BANK NIFTY (Heavyweights) ---
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "ITC",
-    "SBIN", "LTIM", "LT", "BAJFINANCE", "HINDUNILVR", "AXISBANK", "KOTAKBANK",
-    "MARUTI", "SUNPHARMA", "TATASTEEL", "NTPC", "TATAMOTORS", "POWERGRID",
+    "SBIN", "LT", "BAJFINANCE", "HINDUNILVR", "AXISBANK", "KOTAKBANK",
+    "MARUTI", "SUNPHARMA", "TATASTEEL", "NTPC", "POWERGRID", "PERSISTENT",
     "ULTRACEMCO", "TITAN", "ONGC", "ADANIENT", "ADANIPORTS", "JSWSTEEL",
     "COALINDIA", "BAJAJ-AUTO", "M&M", "GRASIM", "TECHM", "HCLTECH",
     "DRREDDY", "HEROMOTOCO", "EICHERMOT", "DIVISLAB", "CIPLA", "APOLLOHOSP",
     "HDFCLIFE", "SBILIFE", "BPCL", "TATACONSUM", "BRITANNIA", "ASIANPAINT",
-    "HINDALCO", "INDUSINDBK", "BEL", "VBL", "SHRIRAMFIN", "TRENT"
+    "HINDALCO", "INDUSINDBK", "BEL", "VBL", "SHRIRAMFIN", "TRENT", "LTTS",
+    "BANKBARODA", "PNB", "CANBK", "AUBANK", "IDFCFIRSTB", "FEDERALBNK",
+
+    # --- NIFTY NEXT 50 ---
+    "ABB", "ADANIGREEN", "ADANIPOWER", "AMBUJACEM", "ATGL", "BAJAJHLDNG",
+    "BANKINDIA", "BOSCHLTD", "CGPOWER", "CHOLAFIN", "COLPAL", "DLF",
+    "GAIL", "GODREJCP", "HAVHAV", "ICICIGI", "ICICIPRULI", "IOC",
+    "IRFC", "JINDALSTEL", "JIOFIN", "LODHA", "MAXHEALTH", "NAUKRI",
+    "NHPC", "NMDC", "OIL", "PAYTM", "PFC", "PIDILITIND",
+    "POLYCAB", "REC", "SBICARD", "SIEMENS", "SRF", "TATAELXSI",
+    "TATAPOWER", "TORNTPHARM", "TUBEINVEST", "UNITDSPR", "ZOMATO",
+
+    # --- LIQUID MIDCAPS & POPULAR F&O STOCKS ---
+    "AUROPHARMA", "BALKRISIND", "BANDHANBNK", "BERGEPAINT", "BHARATFORG",
+    "BIOCON", "BSOFT", "CANFINHOME", "CHAMBLFERT", "COFORGE",
+    "CONCOR", "COROMANDEL", "CROMPTON", "CUMMINSIND", "DABUR",
+    "DALBHARAT", "DEEPAKNTR", "ESCORTS", "EXIDEIND", "GLENMARK",
+    "GMRINFRA", "GODREJPROP", "GRANULES", "GUJGASLTD", "HAL",
+    "HDFCAMC", "IEX", "IGL", "INDHOTEL", "INDIAMART",
+    "INDIGO", "INDUSTOWER", "IPCALAB", "JISLJALEQS", "JKCEMENT",
+    "JUBLFOOD", "KALYANKJIL", "KEI", "LALPATHLAB", "LICHSGFIN",
+    "LUPIN", "MFSL", "MGL", "MOTHERSON", "MPHASIS",
+    "MRF", "MUTHOOTFIN", "NATIONALUM", "NAVINFLUOR", "OBEROIRLTY",
+    "OFSS", "PAGEIND", "PETRONET", "PIIND", "PEL",
+    "PNBHOUSING", "RAMCOCEM", "RECLTD", "SAIL", "SBNN",
+    "SYNGENE", "TATACOMM", "TATACHEM", "TATASTEEL", "TVSMOTOR",
+    "UPL", "VOLTAS", "ZEEL"
 ]
 
+# De-duplicate ticker entries while retaining structure
+FNO_TICKERS = list(dict.fromkeys(FNO_TICKERS))
 def fetch_fno_top_losers(top_n: int = 15) -> pd.DataFrame:
     """Fetch live data for F&O universe and return top losers sorted by price change %."""
     print("🔍 Fetching market performance for F&O universe...")
