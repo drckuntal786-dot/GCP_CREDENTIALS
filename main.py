@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import datetime
 import pandas as pd
 import numpy as np
@@ -49,9 +50,11 @@ def get_sheet(sheet_name: str):
 
 
 # ==========================================
-# 2. Indicator Calculation Helpers
+# 2. Indicator & Calculation Helpers
 # ==========================================
 def calculate_rsi(series: pd.Series, period: int = 14) -> float:
+    if len(series) < period + 1:
+        return 50.0
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -62,6 +65,9 @@ def calculate_rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi.iloc[-1])
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
+    if len(df) < period + 1:
+        return float(df['Close'].iloc[-1] * 0.02) if not df.empty else 10.0
+    
     high = df['High']
     low = df['Low']
     close = df['Close'].shift(1)
@@ -88,107 +94,102 @@ def get_atm_strike(spot_price: float) -> int:
 
 
 # ==========================================
-# 3. Short Trade Analysis Engine
+# 3. Short Trade Technical Analysis Engine
 # ==========================================
-def analyze_short_stock(symbol: str):
-    try:
-        ticker = f"{symbol}.NS" if not symbol.endswith(".NS") else symbol
-        df_daily = yf.download(ticker, period="1y", interval="1d", progress=False)
-        
-        if len(df_daily) < 50:
-            return None
-
-        if isinstance(df_daily.columns, pd.MultiIndex):
-            df_daily.columns = df_daily.columns.get_level_values(0)
-
-        latest_day = df_daily.iloc[-1]
-        prev_day = df_daily.iloc[-2]
-
-        close_price = float(latest_day['Close'])
-        prev_close = float(prev_day['Close'])
-        
-        price_change_pct = ((close_price - prev_close) / prev_close) * 100.0
-        rsi = calculate_rsi(df_daily['Close'])
-        atr = calculate_atr(df_daily)
-
-        # STBT / Short Targets & Stop Loss
-        target_price = round(close_price - (1.2 * atr), 2)
-        stop_loss = round(close_price + (0.8 * atr), 2)
-        atm_strike = get_atm_strike(close_price)
-
-        return {
-            "Symbol": symbol.replace(".NS", ""),
-            "Close": round(close_price, 2),
-            "Price_Change_%": round(price_change_pct, 2),
-            "RSI": round(rsi, 2),
-            "Suggested_Option": f"BUY {atm_strike} PE",
-            "Target_Price": target_price,
-            "Stop_Loss": stop_loss,
-            "Signal": "SELL CONFIRMED"
-        }
-    except Exception as e:
-        print(f"Skipping {symbol}: {e}")
-        return None
-
-
-# ==========================================
-# 4. Pipeline Execution Tasks
-# ==========================================
-def detect_run_phase() -> str:
-    env_mode = os.environ.get("RUN_MODE", "").strip().upper()
-    if env_mode in ["PRE_MARKET", "EXECUTION", "NIGHTLY_RESET"]:
-        return env_mode
-
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    hour, minute = now_utc.hour, now_utc.minute
-
-    if hour == 3 and 30 <= minute <= 50:
-        return "PRE_MARKET"
-    elif hour == 4 and minute <= 30:
-        return "EXECUTION"
-    elif hour == 22 and minute <= 30:
-        return "NIGHTLY_RESET"
+def analyze_short_stock(symbol: str, default_price: float = None, default_change: float = None):
+    """
+    Downloads historical data for additional analytics (RSI, ATR, Options strike).
+    Falls back gracefully if live historical download fails.
+    """
+    clean_symbol = symbol.replace(".NS", "").strip()
+    ticker = f"{clean_symbol}.NS"
     
-    return "EXECUTION"
+    try:
+        df_daily = yf.download(ticker, period="30d", interval="1d", progress=False)
+        
+        if len(df_daily) >= 15:
+            if isinstance(df_daily.columns, pd.MultiIndex):
+                df_daily.columns = df_daily.columns.get_level_values(0)
 
-def run_pre_market_scan():
-    print("🔍 Executing Pre-Market Scan...")
-    sheet = get_sheet("PreMarket_Scan")
+            latest_day = df_daily.iloc[-1]
+            prev_day = df_daily.iloc[-2]
+
+            close_price = float(latest_day['Close'])
+            prev_close = float(prev_day['Close'])
+            price_change_pct = ((close_price - prev_close) / prev_close) * 100.0
+            rsi = calculate_rsi(df_daily['Close'])
+            atr = calculate_atr(df_daily)
+        else:
+            close_price = float(default_price) if default_price is not None else 0.0
+            price_change_pct = float(default_change) if default_change is not None else 0.0
+            rsi = 40.0
+            atr = close_price * 0.025
+
+    except Exception as e:
+        print(f"⚠️ Live indicator fetch warning for {symbol}: {e}")
+        close_price = float(default_price) if default_price is not None else 0.0
+        price_change_pct = float(default_change) if default_change is not None else 0.0
+        rsi = 40.0
+        atr = close_price * 0.025
+
+    target_price = round(close_price - (1.2 * atr), 2)
+    stop_loss = round(close_price + (0.8 * atr), 2)
+    atm_strike = get_atm_strike(close_price)
+
+    return {
+        "Symbol": clean_symbol,
+        "Close": round(close_price, 2),
+        "Price_Change_%": round(price_change_pct, 2),
+        "RSI": round(rsi, 2),
+        "Suggested_Option": f"BUY {atm_strike} PE",
+        "Target_Price": target_price,
+        "Stop_Loss": stop_loss,
+        "Signal": "SELL CONFIRMED"
+    }
+
+
+# ==========================================
+# 4. Pipeline Core Tasks & Google Sheet Processor
+# ==========================================
+def process_short_execution():
+    """
+    Reads Sheet1, finds stocks where 'Short Trade Trigger' == 'SELL CONFIRMED',
+    calculates trade execution targets, and writes results to the 'Execution' sheet.
+    """
     timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    
-    sheet.clear()
-    sheet.append_row(["Timestamp", "Phase", "Status"])
-    sheet.append_row([timestamp_str, "Pre-Market Scan", "READY"])
-    print("✓ Pre-Market Scan complete!")
+    print(f"[{timestamp_str}] 📥 Fetching data from Sheet1...")
 
-def run_short_execution():
-    """Sheet 1 से Short स्टॉक्स को पढ़ना और SELL CONFIRMED होने पर Execution शीट में लिखना"""
-    print(f"[{datetime.datetime.now()}] Reading Sheet 1 for Short Stocks...")
-    
     spreadsheet = get_spreadsheet()
+    
+    # Try finding 'Sheet1' or standard first worksheet
     try:
-        source_sheet = spreadsheet.get_worksheet(0) # First sheet (Sheet 1)
-    except Exception as e:
-        print(f"❌ Error accessing Sheet 1: {e}")
-        return
+        source_sheet = spreadsheet.worksheet("Sheet1")
+    except gspread.exceptions.WorksheetNotFound:
+        source_sheet = spreadsheet.get_worksheet(0)
 
     records = source_sheet.get_all_records()
     if not records:
-        print("No data found in Sheet 1.")
+        print("⚠️ No records found in source sheet.")
         return
 
     confirmed_short_trades = []
-    timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     for row in records:
-        # Sheet 1 की रो चेक करें (Stock - Short और Trigger Status)
-        stock_symbol = str(row.get("Stock", "") or row.get("Symbol", "")).strip()
-        signal_type = str(row.get("Type", "") or row.get("Signal", "")).strip().upper()
-        trigger_status = str(row.get("Trigger", "") or row.get("Status", "")).strip().upper()
+        # Standardized column fetching to match user's provided structure
+        ticker = str(row.get("Ticker", "") or row.get("Stock", "") or row.get("Symbol", "")).strip()
+        trigger_status = str(row.get("Short Trade Trigger", "") or row.get("Trigger", "") or row.get("Status", "")).strip().upper()
+        
+        current_price = row.get("Current Price", None)
+        day_return = row.get("Day Return (%)", None)
 
-        # कंडीशन: Short स्टॉक्स जिनका ट्रिगर SELL CONFIRMED है
-        if stock_symbol and (signal_type == "SHORT" or "SHORT" in signal_type or trigger_status == "SELL CONFIRMED"):
-            analysis = analyze_short_stock(stock_symbol)
+        if not ticker:
+            continue
+
+        # Condition Check: Is the Short Trade Trigger marked as "SELL CONFIRMED"?
+        if trigger_status == "SELL CONFIRMED":
+            print(f"🎯 'SELL CONFIRMED' detected for: {ticker}")
+            analysis = analyze_short_stock(ticker, default_price=current_price, default_change=day_return)
+            
             if analysis:
                 confirmed_short_trades.append([
                     timestamp_str,
@@ -203,25 +204,27 @@ def run_short_execution():
                     analysis['Signal']
                 ])
 
-    # Result को Execution शीट में भेजें
+    # Target Sheet: Execution
     exec_sheet = get_sheet("Execution")
     
     headers = [
-        "Timestamp", "Symbol", "Trade Type", "Close Price", 
+        "Execution-Timestamp", "Symbol", "Trade Type", "Close Price", 
         "% Change", "RSI (14)", "Suggested Option", 
         "Target Price", "Stop Loss", "Execution Status"
     ]
 
     exec_sheet.clear()
     exec_sheet.append_row(headers)
-    
+
     if confirmed_short_trades:
         exec_sheet.append_rows(confirmed_short_trades)
-        print(f"✓ Execution Sheet updated with {len(confirmed_short_trades)} confirmed SHORT trades!")
+        print(f"✓ Execution Sheet updated successfully with {len(confirmed_short_trades)} 'SELL CONFIRMED' trade(s)!\n")
     else:
-        print("No confirmed SELL triggers matched.")
+        print("ℹ️ No 'SELL CONFIRMED' trade triggers met during this run.\n")
+
 
 def run_nightly_reset():
+    """Resets execution log at end of trading session."""
     print("🌙 Running Nightly Reset...")
     sheet = get_sheet("Execution")
     timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -229,21 +232,55 @@ def run_nightly_reset():
     sheet.clear()
     sheet.append_row(["Status", "Last Reset Time", "Message"])
     sheet.append_row(["CLEARED", timestamp_str, "Execution sheet reset for next trading session."])
-    print("✓ Nightly reset completed!")
+    print("✓ Nightly reset completed!\n")
 
 
 # ==========================================
-# 5. Controller Main Entrypoint
+# 5. Continuous Daily Scheduler (Auto-Run Engine)
 # ==========================================
+def run_daily_scheduler(check_interval_seconds: int = 300):
+    """
+    Auto-runs during IST market hours (9:15 AM - 3:30 PM IST) every 5 minutes (default),
+    and triggers a Nightly Reset after market close.
+    """
+    print("==================================================")
+    print("🚀 Auto Scheduler Engine Started")
+    print("📊 Monitoring Sheet1 for SELL CONFIRMED signals...")
+    print("==================================================")
+
+    # IST Offset: UTC + 5:30
+    ist_offset = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+
+    while True:
+        try:
+            now_ist = datetime.datetime.now(ist_offset)
+            weekday = now_ist.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+            current_time = now_ist.time()
+
+            market_start = datetime.time(9, 15)
+            market_end = datetime.time(15, 30)
+            reset_time_start = datetime.time(15, 35)
+            reset_time_end = datetime.time(15, 45)
+
+            # Weekday Check (Monday - Friday)
+            if weekday < 5:
+                if market_start <= current_time <= market_end:
+                    print(f"⏰ [IST {now_ist.strftime('%H:%M:%S')}] Active Trading Hours. Running Scanner...")
+                    process_short_execution()
+                elif reset_time_start <= current_time <= reset_time_end:
+                    print(f"⏰ [IST {now_ist.strftime('%H:%M:%S')}] Post Market Hours. Triggering Reset...")
+                    run_nightly_reset()
+                else:
+                    print(f"💤 [IST {now_ist.strftime('%H:%M:%S')}] Market Closed. Sleeping...")
+            else:
+                print(f"💤 [IST {now_ist.strftime('%Y-%m-%d %H:%M:%S')}] Weekend - Market Closed. Sleeping...")
+
+        except Exception as e:
+            print(f"❌ Error in Scheduler Loop: {e}")
+
+        time.sleep(check_interval_seconds)
+
+
 if __name__ == "__main__":
-    phase = detect_run_phase()
-    print(f"🚀 Execution started for phase: [{phase}]")
-
-    if phase == "PRE_MARKET":
-        run_pre_market_scan()
-    elif phase == "NIGHTLY_RESET":
-        run_nightly_reset()
-    else:
-        run_short_execution()
-
-    sys.exit(0)
+    # Runs scheduler continuously. Re-checks every 5 minutes (300 seconds).
+    run_daily_scheduler(check_interval_seconds=300)
