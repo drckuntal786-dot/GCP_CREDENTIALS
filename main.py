@@ -147,6 +147,77 @@ def analyze_short_stock(symbol: str, default_price: float = None, default_change
 # ==========================================
 # 4. Pipeline Core Tasks
 # ==========================================
+
+# Major F&O Stock Universe (NSE India)
+FNO_TICKERS = [
+    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "ITC",
+    "SBIN", "LTIM", "LT", "BAJFINANCE", "HINDUNILVR", "AXISBANK", "KOTAKBANK",
+    "MARUTI", "SUNPHARMA", "TATASTEEL", "NTPC", "TATAMOTORS", "POWERGRID",
+    "ULTRACEMCO", "TITAN", "ONGC", "ADANIENT", "ADANIPORTS", "JSWSTEEL",
+    "COALINDIA", "BAJAJ-AUTO", "M&M", "GRASIM", "TECHM", "HCLTECH",
+    "DRREDDY", "HEROMOTOCO", "EICHERMOT", "DIVISLAB", "CIPLA", "APOLLOHOSP",
+    "HDFCLIFE", "SBILIFE", "BPCL", "TATACONSUM", "BRITANNIA", "ASIANPAINT",
+    "HINDALCO", "INDUSINDBK", "BEL", "VBL", "SHRIRAMFIN", "TRENT"
+]
+
+def fetch_fno_top_losers(top_n: int = 15) -> pd.DataFrame:
+    """Fetch live data for F&O universe and return top losers sorted by price change %."""
+    print("🔍 Fetching market performance for F&O universe...")
+    yf_symbols = [f"{symbol}.NS" for symbol in FNO_TICKERS]
+    
+    try:
+        # Download 5 days of data to accurately evaluate day change
+        data = yf.download(yf_symbols, period="5d", interval="1d", progress=False)
+        if isinstance(data.columns, pd.MultiIndex):
+            close_prices = data['Close']
+        else:
+            close_prices = data
+            
+        results = []
+        for symbol in FNO_TICKERS:
+            ticker = f"{symbol}.NS"
+            if ticker in close_prices.columns:
+                series = close_prices[ticker].dropna()
+                if len(series) >= 2:
+                    current_p = float(series.iloc[-1])
+                    prev_p = float(series.iloc[-2])
+                    day_ret = ((current_p - prev_p) / prev_p) * 100.0
+                    results.append({
+                        "Ticker": symbol,
+                        "Current Price": round(current_p, 2),
+                        "Day Return (%)": round(day_ret, 2),
+                        "Short Trade Trigger": "SELL CONFIRMED" if day_ret < 0 else "WATCH"
+                    })
+                    
+        df = pd.DataFrame(results)
+        df = df.sort_values(by="Day Return (%)", ascending=True).head(top_n)
+        return df
+
+    except Exception as e:
+        print(f"❌ Error fetching F&O market data: {e}")
+        return pd.DataFrame()
+
+
+def update_sheet1_fno_losers():
+    """Download market losers and overwrite Sheet1 in Google Sheets."""
+    print("⚡ Updating Sheet1 with top F&O losers...")
+    df_losers = fetch_fno_top_losers(top_n=15)
+    
+    if df_losers.empty:
+        print("⚠️ No data gathered for Sheet1 update.")
+        return
+
+    source_sheet = get_sheet("Sheet1")
+    source_sheet.clear()  # Wipes stale content
+    
+    # Structure data payload for Google Sheets batch update
+    headers = ["Ticker", "Current Price", "Day Return (%)", "Short Trade Trigger"]
+    data_matrix = [headers] + df_losers.values.tolist()
+    
+    source_sheet.update(range_name="A1", values=data_matrix)
+    print(f"✅ Sheet1 successfully updated with top {len(df_losers)} losing F&O stocks!")
+
+
 def process_short_execution():
     timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[{timestamp_str}] 📥 Fetching data from Sheet1...")
@@ -193,6 +264,10 @@ def process_short_execution():
                     analysis['Signal']
                 ])
 
+    if not confirmed_short_trades:
+        print("ℹ️ No 'SELL CONFIRMED' signals found to post.")
+        return
+
     exec_sheet = get_sheet("Execution")
     
     headers = [
@@ -200,42 +275,32 @@ def process_short_execution():
         "% Change", "RSI (14)", "Suggested Option", 
         "Target Price", "Stop Loss", "Execution Status"
     ]
-
-    exec_sheet.clear()
-    exec_sheet.append_row(headers)
-
-    if confirmed_short_trades:
-        exec_sheet.append_rows(confirmed_short_trades)
-        print(f"✓ Execution Sheet updated successfully with {len(confirmed_short_trades)} 'SELL CONFIRMED' trade(s)!\n")
-    else:
-        print("ℹ️ No 'SELL CONFIRMED' trade triggers met during this run.\n")
-
-
-def run_nightly_reset():
-    print("🌙 Running Nightly Reset...")
-    sheet = get_sheet("Execution")
-    timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     
-    sheet.clear()
-    sheet.append_row(["Status", "Last Reset Time", "Message"])
-    sheet.append_row(["CLEARED", timestamp_str, "Execution sheet reset for next trading session."])
-    print("✓ Nightly reset completed!\n")
+    # Initialize sheet header if sheet is completely fresh
+    existing_records = exec_sheet.get_all_values()
+    if not existing_records:
+        exec_sheet.append_row(headers)
+
+    exec_sheet.append_rows(confirmed_short_trades)
+    print(f"🚀 Successfully appended {len(confirmed_short_trades)} records to Execution sheet!")
 
 
 # ==========================================
-# 5. Main Execution Entrypoint
+# 5. Pipeline Entry Point
 # ==========================================
+def main():
+    print("=== STARTING AUTOMATED PIPELINE ===")
+    
+    # Step 1: Update Sheet1 with live F&O losers
+    update_sheet1_fno_losers()
+    
+    # Brief delay to allow sheet state synchronization
+    time.sleep(2)
+    
+    # Step 2: Read Sheet1 and execute short trade pipeline
+    process_short_execution()
+    
+    print("=== PIPELINE EXECUTION COMPLETE ===")
+
 if __name__ == "__main__":
-    run_mode = os.environ.get("RUN_MODE", "").strip().upper()
-    print(f"🚀 Main script triggered with RUN_MODE: [{run_mode or 'DEFAULT_SCHEDULER'}]")
-
-    if run_mode == "EXECUTION":
-        process_short_execution()
-        sys.exit(0)
-    elif run_mode == "NIGHTLY_RESET":
-        run_nightly_reset()
-        sys.exit(0)
-    else:
-        # Fallback to single execution for automated actions/CI pipelines
-        process_short_execution()
-        sys.exit(0)
+    main()
