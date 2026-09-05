@@ -52,4 +52,4 @@ jobs:
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           RUN_MODE: ${{ env.RUN_MODE }}
-        run: python screener.py
+        run: python main.py
