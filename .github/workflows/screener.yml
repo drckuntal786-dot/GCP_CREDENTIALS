@@ -2,9 +2,9 @@ name: NSE F&O Short Screener Pipeline
 
 on:
   schedule:
-    # Runs at 10:00 AM UTC (3:30 PM IST) every Monday through Friday (Market Close)
+    # 3:30 PM IST = 10:00 AM UTC
     - cron: '0 10 * * 1-5'
-  workflow_dispatch: # Allows manual triggers from GitHub Actions UI
+  workflow_dispatch:
 
 jobs:
   run-pipeline:
@@ -27,8 +27,9 @@ jobs:
 
       - name: Write GCP Service Account File
         run: |
-          echo "${{ secrets.GCP_CREDENTIALS }}" > service_account.json
-        # Fallback step ensuring service_account.json exists on runner disk
+          echo "$GCP_CREDENTIALS" > service_account.json
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
 
       - name: Execute Automated Pipeline
         env:
