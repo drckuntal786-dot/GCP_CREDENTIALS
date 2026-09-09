@@ -263,9 +263,12 @@ def update_sheet1_fno_losers():
 
 
 def process_short_execution():
-    """Analyze triggered short stocks and write execution steps to Execution sheet."""
-    timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    print(f"[{timestamp_str}] 📥 Processing Short Trades Execution...")
+    """Analyze triggered short stocks and overwrite the Execution sheet with fresh timestamps."""
+    # Define IST Timezone (UTC+5:30) for Indian stock market time
+    ist_tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    current_run_time = datetime.datetime.now(ist_tz).strftime("%Y-%m-%d %H:%M:%S IST")
+    
+    print(f"[{current_run_time}] 📥 Processing Short Trades Execution...")
 
     spreadsheet = get_spreadsheet()
     
@@ -296,8 +299,11 @@ def process_short_execution():
             analysis = analyze_short_stock(ticker, default_price=current_price, default_change=day_return)
             
             if analysis:
+                # Generate exact live execution timestamp for this trade entry
+                live_entry_timestamp = datetime.datetime.now(ist_tz).strftime("%Y-%m-%d %H:%M:%S IST")
+                
                 confirmed_short_trades.append([
-                    timestamp_str,
+                    live_entry_timestamp,
                     analysis['Symbol'],
                     "SHORT / STBT",
                     analysis['Close'],
@@ -321,12 +327,14 @@ def process_short_execution():
         "Target Price", "Stop Loss", "Execution Status"
     ]
     
-    existing_records = exec_sheet.get_all_values()
-    if not existing_records:
-        exec_sheet.append_row(headers)
-
-    exec_sheet.append_rows(confirmed_short_trades)
-    print(f"🚀 Successfully appended {len(confirmed_short_trades)} records to Execution sheet!")
+    # 1. Clear old execution entries so the table always reflects the updated run timestamp
+    exec_sheet.clear()
+    
+    # 2. Overwrite with fresh current execution matrix
+    full_data_payload = [headers] + confirmed_short_trades
+    exec_sheet.update(range_name="A1", values=full_data_payload)
+    
+    print(f"🚀 Successfully updated Execution sheet with {len(confirmed_short_trades)} records at {current_run_time}!")
 
 
 def run_pipeline():
