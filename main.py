@@ -3,6 +3,7 @@ import sys
 import time
 import datetime
 import json
+import argparse
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -33,9 +34,11 @@ SCOPES = [
 ]
 
 def get_spreadsheet():
-    # Priority 1: Check for JSON string stored directly in env variable
+    """Authenticate and fetch the Google Spreadsheet client."""
     gcp_secret_env = os.environ.get("GCP_CREDENTIALS", "").strip()
+    creds = None
     
+    # Priority 1: Check environment variable secret
     if gcp_secret_env:
         try:
             cred_info = json.loads(gcp_secret_env)
@@ -43,10 +46,8 @@ def get_spreadsheet():
         except Exception as e:
             print(f"⚠️ Failed parsing GCP_CREDENTIALS environment secret: {e}")
             creds = None
-    else:
-        creds = None
 
-    # Priority 2: Fall back to local service_account.json file
+    # Priority 2: Fall back to local service_account.json
     if creds is None:
         if not os.path.exists(SERVICE_ACCOUNT_FILE):
             print(f"❌ ERROR: Credentials file {SERVICE_ACCOUNT_FILE} not found and GCP_CREDENTIALS env var is missing/invalid!")
@@ -62,6 +63,7 @@ def get_spreadsheet():
     return client.open_by_key(SPREADSHEET_ID)
 
 def get_sheet(sheet_name: str):
+    """Retrieve or create a worksheet by name."""
     spreadsheet = get_spreadsheet()
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -71,7 +73,7 @@ def get_sheet(sheet_name: str):
 
 
 # ==========================================
-# 2. Indicator & Calculation Helpers
+# 2. Technical Indicator Helpers
 # ==========================================
 def calculate_rsi(series: pd.Series, period: int = 14) -> float:
     if len(series) < period + 1:
@@ -118,7 +120,7 @@ def get_atm_strike(spot_price: float) -> int:
 
 
 # ==========================================
-# 3. Short Trade Technical Analysis Engine
+# 3. Short Trade Technical Engine
 # ==========================================
 def analyze_short_stock(symbol: str, default_price: float = None, default_change: float = None):
     clean_symbol = symbol.replace(".NS", "").strip()
@@ -171,10 +173,7 @@ def analyze_short_stock(symbol: str, default_price: float = None, default_change
 # ==========================================
 # 4. Pipeline Core Tasks
 # ==========================================
-
-# Comprehensive F&O Universe with valid Yahoo Finance symbols
-FNO_TICKERS = [
-    # --- NIFTY 50 & BANK NIFTY ---
+FNO_TICKERS = list(dict.fromkeys([
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "ITC",
     "SBIN", "LT", "BAJFINANCE", "HINDUNILVR", "AXISBANK", "KOTAKBANK",
     "MARUTI", "SUNPHARMA", "TATASTEEL", "NTPC", "POWERGRID", "PERSISTENT",
@@ -184,17 +183,13 @@ FNO_TICKERS = [
     "HDFCLIFE", "SBILIFE", "BPCL", "TATACONSUM", "BRITANNIA", "ASIANPAINT",
     "HINDALCO", "INDUSINDBK", "BEL", "VBL", "SHRIRAMFIN", "TRENT", "LTTS",
     "BANKBARODA", "PNB", "CANBK", "AUBANK", "IDFCFIRSTB", "FEDERALBNK",
-
-    # --- NIFTY NEXT 50 & LIQUID STOCKS ---
     "ABB", "ADANIGREEN", "ADANIPOWER", "AMBUJACEM", "ATGL", "BAJAJHLDNG",
     "BANKINDIA", "BOSCHLTD", "CGPOWER", "CHOLAFIN", "COLPAL", "DLF",
     "GAIL", "GODREJCP", "HAVELLS", "ICICIGI", "ICICIPRULI", "IOC",
     "IRFC", "JINDALSTEL", "JIOFIN", "LODHA", "MAXHEALTH", "NAUKRI",
     "NHPC", "NMDC", "OIL", "PAYTM", "PFC", "PIDILITIND",
     "POLYCAB", "RECLTD", "SBICARD", "SIEMENS", "SRF", "TATAELXSI",
-    "TATAPOWER", "TORNTPHARM", "TIINDIA", "UNITDSPR", "ETWEEN",
-
-    # --- LIQUID MIDCAPS ---
+    "TATAPOWER", "TORNTPHARM", "TIINDIA", "UNITDSPR",
     "AUROPHARMA", "BALKRISIND", "BANDHANBNK", "BERGEPAINT", "BHARATFORG",
     "BIOCON", "BSOFT", "CANFINHOME", "CHAMBLFERT", "COFORGE",
     "CONCOR", "COROMANDEL", "CROMPTON", "CUMMINSIND", "DABUR",
@@ -208,18 +203,14 @@ FNO_TICKERS = [
     "OFSS", "PAGEIND", "PETRONET", "PIIND", "PNBHOUSING",
     "RAMCOCEM", "SAIL", "SJVN", "SYNGENE", "TATACOMM",
     "TATACHEM", "TVSMOTOR", "UPL", "VOLTAS", "ZEEL"
-]
-
-# De-duplicate ticker entries while retaining structure
-FNO_TICKERS = list(dict.fromkeys(FNO_TICKERS))
+]))
 
 def fetch_fno_top_losers(top_n: int = 15) -> pd.DataFrame:
-    """Fetch live data for F&O universe and return top losers sorted by price change %."""
+    """Fetch live market data for the F&O universe and return top losers."""
     print("🔍 Fetching market performance for F&O universe...")
     yf_symbols = [f"{symbol}.NS" for symbol in FNO_TICKERS]
     
     try:
-        # Download 5 days of data to accurately evaluate day change
         data = yf.download(yf_symbols, period="5d", interval="1d", progress=False)
         if isinstance(data.columns, pd.MultiIndex):
             close_prices = data['Close']
@@ -262,9 +253,8 @@ def update_sheet1_fno_losers():
         return
 
     source_sheet = get_sheet("Sheet1")
-    source_sheet.clear()  # Wipes stale content
+    source_sheet.clear()
     
-    # Structure data payload for Google Sheets batch update
     headers = ["Ticker", "Current Price", "Day Return (%)", "Short Trade Trigger"]
     data_matrix = [headers] + df_losers.values.tolist()
     
@@ -273,8 +263,9 @@ def update_sheet1_fno_losers():
 
 
 def process_short_execution():
+    """Analyze triggered short stocks and write execution steps to Execution sheet."""
     timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    print(f"[{timestamp_str}] 📥 Fetching data from Sheet1...")
+    print(f"[{timestamp_str}] 📥 Processing Short Trades Execution...")
 
     spreadsheet = get_spreadsheet()
     
@@ -330,7 +321,6 @@ def process_short_execution():
         "Target Price", "Stop Loss", "Execution Status"
     ]
     
-    # Initialize sheet header if sheet is completely fresh
     existing_records = exec_sheet.get_all_values()
     if not existing_records:
         exec_sheet.append_row(headers)
@@ -339,22 +329,35 @@ def process_short_execution():
     print(f"🚀 Successfully appended {len(confirmed_short_trades)} records to Execution sheet!")
 
 
-# ==========================================
-# 5. Pipeline Entry Point
-# ==========================================
-def main():
-    print("=== STARTING AUTOMATED PIPELINE ===")
-    
-    # Step 1: Update Sheet1 with live F&O losers
+def run_pipeline():
+    """Execute full screening and sheet update workflow."""
+    print("\n=== STARTING AUTOMATED PIPELINE EXECUTION ===")
     update_sheet1_fno_losers()
-    
-    # Brief delay to allow sheet state synchronization
     time.sleep(2)
-    
-    # Step 2: Read Sheet1 and execute short trade pipeline
     process_short_execution()
-    
-    print("=== PIPELINE EXECUTION COMPLETE ===")
+    print("=== PIPELINE EXECUTION COMPLETE ===\n")
 
+
+# ==========================================
+# 5. CLI & Auto-Run Loop Entry Point
+# ==========================================
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="NSE F&O Short Screener & Google Sheet Auto-Updater")
+    parser.add_argument("--loop", action="store_true", help="Run in continuous loop mode (auto-refresh)")
+    parser.add_argument("--interval", type=int, default=300, help="Refresh interval in seconds (default: 300s / 5 mins)")
+
+    args = parser.parse_args()
+
+    if args.loop:
+        print(f"🔄 Auto-Run Mode activated. Running every {args.interval} seconds...")
+        while True:
+            try:
+                run_pipeline()
+            except Exception as e:
+                print(f"❌ Error during execution iteration: {e}")
+            
+            print(f"⏳ Sleeping for {args.interval} seconds... Press Ctrl+C to stop.")
+            time.sleep(args.interval)
+    else:
+        # Default single run execution for GitHub Actions / Crontabs
+        run_pipeline()
